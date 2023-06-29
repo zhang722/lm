@@ -1,0 +1,11 @@
+[package]
+name = "lm"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+rand = { version = "0.8.5", default_features = false, features = ["std", "std_rng", "small_rng"] }
+nalgebra = { version = "0.32.2", features = ["rayon"] }
+rayon = "1.7.0"
