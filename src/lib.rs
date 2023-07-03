@@ -1,5 +1,4 @@
 mod graph;
-mod optimize;
 
 use nalgebra as na;
 
