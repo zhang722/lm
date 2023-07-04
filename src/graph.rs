@@ -2,9 +2,12 @@ use std::{ collections::HashMap, cell::RefCell, rc::Rc };
 
 use nalgebra as na;
 
-pub trait Vertex {
+pub trait Id {
     fn id(&self) -> usize;
     fn id_mut(&mut self) -> &mut usize;
+}
+
+pub trait Vertex : Id {
     fn edges(&self) -> &Vec<usize>;
     fn edges_mut(&mut self) -> &mut Vec<usize>;
     fn params(&self) -> &na::DVector<f64>;
@@ -20,14 +23,12 @@ pub trait Vertex {
 
 type VertexBase = Rc<RefCell<dyn Vertex>>;
 
-pub trait Edge {
-    fn id(&self) -> usize;
-    fn id_mut(&mut self) -> &mut usize;
+pub trait Edge: Id {
     fn vertex(&self, ith: usize) -> VertexBase;
     fn vertices(&self) -> &Vec<VertexBase>;
     fn vertices_mut(&mut self) -> &mut Vec<VertexBase>;
     fn residual(&self) -> na::DVector<f64>;
-    fn jacobain(&self, ith: usize) -> na::DMatrix<f64>;
+    fn jacobian(&self, ith: usize) -> na::DMatrix<f64>;
     fn sigma(&self) -> na::DMatrix<f64>;
 
     fn dimension(&self) -> usize {
@@ -108,11 +109,38 @@ impl Graph {
     }
 
     pub fn update_params(&mut self, delta: &na::DVector<f64>) {
-        todo!()
+        let mut idx = 0;
+        for vertex_set in self.vertices.iter() {
+            for vertex in vertex_set {
+                let dim = vertex.borrow().dimension();
+                let delta_vertex = delta.rows(idx, dim).clone_owned();
+                vertex.borrow_mut().plus(&delta_vertex);
+
+                idx += dim;
+            }
+        }
     }
 
     pub fn vertex2param(&self) -> na::DVector<f64> {
-        todo!()
+       let mut dim_total = 0;
+        for vertex_set in self.vertices.iter() {
+            for vertex in vertex_set {
+                dim_total += vertex.borrow().dimension();
+            }
+        }
+
+        let idx = 0;
+        let mut params = na::DVector::<f64>::zeros(dim_total);
+        for vertex_set in self.vertices.iter() {
+            for vertex in vertex_set {
+                let dim = vertex.borrow().dimension();
+                params.rows_mut(idx, dim).copy_from(
+                    vertex.borrow().params()
+                );
+            }
+        }
+
+        params
     }
 
     pub fn params_norm(&self) -> f64 {
@@ -142,305 +170,310 @@ impl Graph {
         res
     }
 
-    // pub fn calculate_jt_residual(&self) -> na::DVector<f64> {
-    //     let jt_residual_a_len = self.vertices[0].iter().fold(0usize, |acc, x| {
-    //         acc + x.dimension()
-    //     });
-    //     let jt_residual_b_len = self.vertices[1].iter().fold(0usize, |acc, x| {
-    //         acc + x.dimension()
-    //     });
+    pub fn calculate_jt_residual_aj(&self, vertex0_j: usize) -> na::DVector<f64> {
+        assert!(self.vertices[0].len() > vertex0_j);
+        let vertex0_j = self.vertices[0][vertex0_j].clone();
+        let mut res = na::DVector::<f64>::zeros(
+            vertex0_j.borrow().dimension() 
+        );
 
-    //     let mut jt_residual = na::DVector::<f64>::zeros(jt_residual_a_len + jt_residual_b_len);
+        for edge in vertex0_j.borrow().edges().iter() {
+            if let Some(edge) = self.edge(*edge) {
+                res += edge.borrow().jacobian(0).transpose() * edge.borrow().sigma() * edge.borrow().residual();
+            }
+        }
+
+        res
+    }
+
+    pub fn calculate_jt_residual_bi(&self, vertex1_i: usize) -> na::DVector<f64> {
+        assert!(self.vertices[1].len() > vertex1_i);
+        let vertex1_i = self.vertices[1][vertex1_i].clone();
+        let mut res = na::DVector::<f64>::zeros(
+            vertex1_i.borrow().dimension() 
+        );
+
+        for edge in vertex1_i.borrow().edges().iter() {
+            if let Some(edge) = self.edge(*edge) {
+                res += edge.borrow().jacobian(1).transpose() * edge.borrow().sigma() * edge.borrow().residual();
+            }
+        }
+
+        res
+    }
+
+    pub fn calculate_jt_residual(&self) -> na::DVector<f64> {
+        let jt_residual_a_len = self.vertices[0].iter().fold(0usize, |acc, x| {
+            acc + x.borrow().dimension()
+        });
+        let jt_residual_b_len = self.vertices[1].iter().fold(0usize, |acc, x| {
+            acc + x.borrow().dimension()
+        });
+
+        let mut jt_residual = na::DVector::<f64>::zeros(jt_residual_a_len + jt_residual_b_len);
         
-    //     let mut idx = 0;
-    //     for vertex in self.vertices[0].iter() {
-    //         let dim = vertex.dimension();
-    //         let mut jt_residual_aj = na::DVector::<f64>::zeros(dim);
-    //         for edge in self.edges.iter() {
-    //             if !Rc::ptr_eq(&edge.vertex0(), &vertex) {
-    //                 continue;
-    //             }
+        let mut idx = 0;
+        for (vertex0_j, vertex) in self.vertices[0].iter().enumerate() {
+            let dim = vertex.borrow().dimension();
+            
+            jt_residual.rows_mut(idx, dim).copy_from(
+                &self.calculate_jt_residual_aj(vertex0_j)
+            );
+            idx += dim;
+        }
 
-    //             jt_residual_aj += edge.jacobian0().transpose() * edge.sigma() * edge.residual();
-    //         }
-    //         jt_residual.rows_mut(idx, dim).copy_from(
-    //             &jt_residual_aj
-    //         );
-    //         idx += dim;
-    //     }
+        for (vertex1_i, vertex) in self.vertices[1].iter().enumerate() {
+            let dim = vertex.borrow().dimension();
+            
+            jt_residual.rows_mut(idx, dim).copy_from(
+                &self.calculate_jt_residual_bi(vertex1_i)
+            );
+            idx += dim;
+        }
+      
 
-    //     for vertex in self.vertices[1].iter() {
-    //         let dim = vertex.dimension();
-    //         let mut jt_residual_ai = na::DVector::<f64>::zeros(dim);
-    //         for edge in self.edges.iter() {
-    //             if !Rc::ptr_eq(&edge.vertex1(), &vertex) {
-    //                 continue;
-    //             }
+        jt_residual
+    }
 
-    //             jt_residual_ai += edge.jacobian1().transpose() * edge.sigma() * edge.residual();
-    //         }
-    //         jt_residual.rows_mut(idx, dim).copy_from(
-    //             &jt_residual_ai
-    //         );
-    //         idx += dim;
-    //     }
+    #[inline]
+    fn calculate_u(&self, vertex0_j: usize) -> na::DMatrix<f64> {
+        assert!(self.vertices[0].len() > vertex0_j);
+        let vertex0_j = self.vertices[0][vertex0_j].clone();
+        let mut res = na::DMatrix::<f64>::zeros(
+            vertex0_j.borrow().dimension(),
+            vertex0_j.borrow().dimension(),
+        );
 
-    //     jt_residual
-    // }
+        for edge in vertex0_j.borrow().edges().iter() {
+            if let Some(edge) = self.edge(*edge) {
+                res += edge.borrow().jacobian(0).transpose() * edge.borrow().sigma() * edge.borrow().jacobian(0);
+            }
+        }
 
-    // #[inline]
-    // fn calculate_u(&self, vertex0_j: usize) -> na::DMatrix<f64> {
-    //     let dim = self.vertices[0][vertex0_j].dimension();
-    //     let mut u = self.lm_params.u * na::DMatrix::<f64>::identity(dim, dim);
-    //     for edge in self.edges.iter() {
-    //         if !Rc::ptr_eq(&edge.vertex0(), &self.vertices[0][vertex0_j]) {
-    //             continue;
-    //         }
+        res
+    }
 
-    //         u += edge.jacobian0().transpose() * edge.sigma() * edge.jacobian0();
-    //     }
+    #[inline]
+    fn calculate_v_inv(&self, vertex1_i: usize) -> Option<na::DMatrix<f64>> {
+        assert!(self.vertices[0].len() > vertex1_i);
+        let vertex1_i = self.vertices[1][vertex1_i].clone();
+        let mut res = na::DMatrix::<f64>::zeros(
+            vertex1_i.borrow().dimension(),
+            vertex1_i.borrow().dimension(),
+        );
 
-    //     u
-    // }
+        for edge in vertex1_i.borrow().edges().iter() {
+            if let Some(edge) = self.edge(*edge) {
+                res += edge.borrow().jacobian(1).transpose() * edge.borrow().sigma() * edge.borrow().jacobian(1);
+            }
+        }
 
-    // #[inline]
-    // fn calculate_v_inv(&self, vertex1_i: usize) -> Option<na::DMatrix<f64>> {
-    //     let dim = self.vertices[1][vertex1_i].dimension();
-    //     let mut v = self.lm_params.u * na::DMatrix::<f64>::identity(dim, dim);
-    //     for edge in self.edges.iter() {
-    //         if !Rc::ptr_eq(&edge.vertex1(), &self.vertices[1][vertex1_i]) {
-    //             continue;
-    //         }
+        match res.pseudo_inverse(f64::EPSILON) {
+            Ok(v_inv) => Some(v_inv),
+            Err(_) => None,
+        }
+    }
 
-    //         v += edge.jacobian1().transpose() * edge.sigma() * edge.jacobian1();
-    //     }
+    #[inline]
+    fn calculate_w(&self, vertex0_j: usize, vertex1_i: usize) -> na::DMatrix<f64> {
+        let vertex0_j = self.vertices[0][vertex0_j].clone();
+        let vertex1_i = self.vertices[1][vertex1_i].clone();
+        let nrows = vertex0_j.borrow().dimension();
+        let ncols = vertex1_i.borrow().dimension();
+        let mut w = na::DMatrix::<f64>::zeros(nrows, ncols);
+        for edge in vertex0_j.borrow().edges().iter() {
+            if let Some(edge) = self.edge(*edge) {
+                if !Rc::ptr_eq(&edge.borrow().vertex(1), &vertex1_i) {
+                    continue;
+                }
 
-    //     match v.pseudo_inverse(f64::EPSILON) {
-    //         Ok(v_inv) => Some(v_inv),
-    //         Err(_) => None,
-    //     }
-    // }
+                w += edge.borrow().jacobian(0).transpose() * edge.borrow().sigma() * edge.borrow().jacobian(1);
+            }
+        }
 
-    // #[inline]
-    // fn calculate_w(&self, vertex0_j: usize, vertex1_i: usize) -> na::DMatrix<f64> {
-    //     let nrows = self.vertices[0][vertex0_j].dimension();
-    //     let ncols = self.vertices[1][vertex1_i].dimension();
-    //     let mut w = na::DMatrix::<f64>::zeros(nrows, ncols);
-    //     for edge in self.edges.iter() {
-    //         if !Rc::ptr_eq(&edge.vertex0(), &self.vertices[0][vertex0_j]) ||
-    //             !Rc::ptr_eq(&edge.vertex1(), &self.vertices[1][vertex1_i]) {
-    //             continue;
-    //         }
+        w
+    }
 
-    //         w += edge.jacobian0().transpose() * edge.sigma() * edge.jacobian1();
-    //     }
+    #[inline]
+    fn calculate_y(&self, vertex0_j: usize, vertex1_i: usize) -> Option<na::DMatrix<f64>> {
+        Some(self.calculate_w(vertex0_j, vertex1_i) * self.calculate_v_inv(vertex1_i)?)
+    }
 
-    //     w
-    // }
+    fn calculate_s(&self) -> Option<na::DMatrix<f64>> {
+        let dim = self.vertices[0].iter().fold(0usize, |acc, x| {
+            acc + x.borrow().dimension()
+        });
 
-    // #[inline]
-    // fn calculate_y(&self, vertex0_j: usize, vertex1_i: usize) -> Option<na::DMatrix<f64>> {
-    //     Some(self.calculate_w(vertex0_j, vertex1_i) * self.calculate_v_inv(vertex1_i)?)
-    // }
-
-    // fn calculate_s(&self) -> Option<na::DMatrix<f64>> {
-    //     let dim = self.vertices[0].iter().fold(0usize, |acc, x| {
-    //         acc + x.dimension()
-    //     });
-
-    //     let mut s = na::DMatrix::<f64>::zeros(
-    //         dim,
-    //         dim
-    //     );
+        let mut s = na::DMatrix::<f64>::zeros(
+            dim,
+            dim
+        );
         
-    //     // Divide blocks for parallelization.
-    //     let s_blocks = (0..self.vertices[0].len())
-    //         .flat_map(|j| (0..self.vertices[0].len()).map(|k| (j, k)).collect::<Vec<_>>())
-    //         .collect::<Vec<_>>();
+        // Divide blocks for parallelization.
+        let s_blocks = (0..self.vertices[0].len())
+            .flat_map(|j| (0..self.vertices[0].len()).map(|k| (j, k)).collect::<Vec<_>>())
+            .collect::<Vec<_>>();
 
-    //     let s_blocks = s_blocks
-    //         .into_iter()
-    //         .map(|(view_j, view_k)| {
-    //             let mut s_jk = na::DMatrix::<f64>::zeros(
-    //                 self.vertices[0][view_j].dimension(),
-    //                 self.vertices[0][view_k].dimension(),
-    //             );
-    //             if view_j == view_k {
-    //                 let u = self.calculate_u(view_j);
-    //                 s_jk += u;
-    //             }
-    //             for (vertex1_i, vertex ) in self.vertices[1].iter().enumerate() {
-    //                 let y_ij = self.calculate_y(vertex1_i, view_j)?;
-    //                 let w_ik = self.calculate_w(vertex1_i, view_k);
-    //                 let y_ij_w = y_ij * w_ik.transpose();
-    //                 s_jk -= y_ij_w;
-    //             }
-    //             Some((view_j, view_k, s_jk))
-    //         })
-    //         .collect::<Vec<_>>();
+        let s_blocks = s_blocks
+            .into_iter()
+            .map(|(view_j, view_k)| {
+                let mut s_jk = na::DMatrix::<f64>::zeros(
+                    self.vertices[0][view_j].borrow().dimension(),
+                    self.vertices[0][view_k].borrow().dimension(),
+                );
+                if view_j == view_k {
+                    let u = self.calculate_u(view_j);
+                    s_jk += u;
+                }
+                for (vertex1_i, vertex ) in self.vertices[1].iter().enumerate() {
+                    let y_ij = self.calculate_y(vertex1_i, view_j)?;
+                    let w_ik = self.calculate_w(vertex1_i, view_k);
+                    let y_ij_w = y_ij * w_ik.transpose();
+                    s_jk -= y_ij_w;
+                }
+                Some((view_j, view_k, s_jk))
+            })
+            .collect::<Vec<_>>();
 
-    //     s_blocks.iter().for_each(|block| {
-    //         let (j, k, s_jk) = if let Some((j, k, s_jk)) = block {
-    //             (j, k, s_jk)
-    //         } else {
-    //             return;
-    //         };
-    //         s.view_mut(
-    //             (j * self.vertices[0][0].dimension(), k * self.vertices[0][0].dimension()),
-    //             (self.vertices[0][0].dimension(), self.vertices[0][0].dimension()),
-    //         )
-    //         .copy_from(s_jk);
-    //     });
+        s_blocks.iter().for_each(|block| {
+            let (j, k, s_jk) = if let Some((j, k, s_jk)) = block {
+                (j, k, s_jk)
+            } else {
+                return;
+            };
+            s.view_mut(
+                (j * self.vertices[0][0].borrow().dimension(), k * self.vertices[0][0].borrow().dimension()),
+                (self.vertices[0][0].borrow().dimension(), self.vertices[0][0].borrow().dimension()),
+            )
+            .copy_from(s_jk);
+        });
 
-    //     Some(s)
-    // }
+        Some(s)
+    }
 
-    // fn calculate_e(&self) -> Option<na::DVector<f64>> {
-    //     let dim = self.vertices[0].iter().fold(0usize, |acc, x| {
-    //         acc + x.dimension()
-    //     });
-    //     let mut e = na::DVector::zeros(dim);
+    fn calculate_e(&self) -> Option<na::DVector<f64>> {
+        let dim = self.vertices[0].iter().fold(0usize, |acc, x| {
+            acc + x.borrow().dimension()
+        });
+        let mut e = na::DVector::zeros(dim);
 
-    //     let e_blocks = self.vertices[0].iter().enumerate()
-    //         .map(|(vertex0_j, vertex0)| {
-    //             let dim0 = vertex0.dimension();
-    //             let mut e_j = na::DVector::<f64>::zeros(dim0);
-    //             for (vertex1_i, vertex1 ) in self.vertices[1].iter().enumerate() {
-    //                 let dim1 = vertex1.dimension();
-    //                 let mut jt_residual_bi = na::DVector::<f64>::zeros(dim1);
-    //                 for edge in self.edges.iter() {
-    //                     if !Rc::ptr_eq(&edge.vertex0(), vertex0) || 
-    //                         !Rc::ptr_eq(&edge.vertex1(), vertex1) {
-    //                         continue;
-    //                     } 
-    //                     jt_residual_bi += edge.jacobian1() * edge.sigma() * edge.residual();
-    //                 }
-    //                 for edge in self.edges.iter() {
-    //                     if !Rc::ptr_eq(&edge.vertex0(), vertex0) || 
-    //                         !Rc::ptr_eq(&edge.vertex1(), vertex1) {
-    //                         continue;
-    //                     } 
-    //                     e_j += edge.jacobian0().transpose() * edge.sigma() * edge.residual();
-    //                     e_j -= self.calculate_y(vertex0_j, vertex1_i)? * &jt_residual_bi;
-    //                 }
-    //             }
-    //             Some((vertex0_j, e_j))
-    //         })
-    //         .collect::<Vec<_>>();
+        let e_blocks = self.vertices[0].iter().enumerate()
+            .map(|(vertex0_j, vertex0)| {
+                let dim0 = vertex0.borrow().dimension();
+                let mut e_j = self.calculate_jt_residual_aj(vertex0_j);
+                for (vertex1_i, vertex1) in self.vertices[1].iter().enumerate() {
+                    e_j -= self.calculate_y(vertex0_j, vertex1_i)? * self.calculate_jt_residual_bi(vertex1_i);
+                }
+                Some((vertex0_j, e_j))
+            })
+            .collect::<Vec<_>>();
 
-    //     let mut idx = 0;
-    //     e_blocks.iter().for_each(|block| {
-    //         let (j, e_j) = if let Some((j, e_j)) = block {
-    //             (j, e_j)
-    //         } else {
-    //             return;
-    //         };
-    //         let dim = self.vertices[0][*j].dimension();
-    //         e.rows_mut(idx, dim)
-    //             .copy_from(e_j);
-    //         idx += dim;
-    //     });
+        let mut idx = 0;
+        e_blocks.iter().for_each(|block| {
+            let (j, e_j) = if let Some((j, e_j)) = block {
+                (j, e_j)
+            } else {
+                return;
+            };
+            let dim = self.vertices[0][*j].borrow().dimension();
+            e.rows_mut(idx, dim)
+                .copy_from(e_j);
+            idx += dim;
+        });
 
-    //     Some(e)
-    // }
+        Some(e)
+    }
 
-    // fn calculate_delta_b(&self, delta_a: &na::DVector<f64>) -> Option<na::DVector<f64>> {
-    //     let dim = self.vertices[0].iter().fold(0usize, |acc, x| {
-    //         acc + x.dimension()
-    //     });
-    //     let mut e = na::DVector::zeros(dim);
+    fn calculate_delta_b(&self, delta_a: &na::DVector<f64>) -> Option<na::DVector<f64>> {
+        let dim = self.vertices[0].iter().fold(0usize, |acc, x| {
+            acc + x.borrow().dimension()
+        });
+        let mut b = na::DVector::zeros(dim);
 
-    //     let e_blocks = self.vertices[1].iter().enumerate()
-    //         .map(|(vertex1_i, vertex1)| {
-    //             let dim1 = vertex1.dimension();
-    //             let mut idx = 0; 
-    //             let mut e_i = na::DVector::<f64>::zeros(dim1);
-    //             for (vertex0_j, vertex0 ) in self.vertices[0].iter().enumerate() {
-    //                 let dim0 = vertex0.dimension();
-    //                 let delta_aj = delta_a.rows(idx, dim0).clone_owned();
-    //                 idx += dim0;
-    //                 for edge in self.edges.iter() {
-    //                     if !Rc::ptr_eq(&edge.vertex0(), vertex0) || 
-    //                         !Rc::ptr_eq(&edge.vertex1(), vertex1) {
-    //                         continue;
-    //                     } 
-    //                     e_i += edge.jacobian1() * edge.sigma() * edge.residual();
-    //                     e_i -= self.calculate_w(vertex0_j, vertex1_i).transpose() * &delta_aj;
-    //                 }
-    //             }
-    //             Some((vertex1_i, e_i))
-    //         })
-    //         .collect::<Vec<_>>();
+        let e_blocks = self.vertices[1].iter().enumerate()
+            .map(|(vertex1_i, _vertex1)| {
+                let mut idx = 0; 
+                let mut e_i = self.calculate_jt_residual_bi(vertex1_i);
+                for (vertex0_j, vertex0) in self.vertices[0].iter().enumerate() {
+                    let dim0 = vertex0.borrow().dimension();
+                    let delta_aj = delta_a.rows(idx, dim0).clone_owned();
+                    e_i -= self.calculate_w(vertex0_j, vertex1_i) * delta_aj;
+                    idx += dim0;
+                }
+                
+                Some((vertex1_i, self.calculate_v_inv(vertex1_i)? * e_i))
+            })
+            .collect::<Vec<_>>();
 
-    //     let mut idx = 0;
-    //     e_blocks.iter().for_each(|block| {
-    //         let (i, e_i) = if let Some((i, e_i)) = block {
-    //             (i, e_i)
-    //         } else {
-    //             return;
-    //         };
-    //         let dim = self.vertices[1][*i].dimension();
-    //         e.rows_mut(idx, dim)
-    //             .copy_from(e_i);
-    //         idx += dim;
-    //     });
+        let mut idx = 0;
+        e_blocks.iter().for_each(|block| {
+            let (i, e_i) = if let Some((i, e_i)) = block {
+                (i, e_i)
+            } else {
+                return;
+            };
+            let dim = self.vertices[1][*i].borrow().dimension();
+            b.rows_mut(idx, dim)
+                .copy_from(e_i);
+            idx += dim;
+        });
 
-    //     Some(e)
+        Some(b)
 
-    // }
+    }
 
-    // pub fn calculate_delta_step(&self) -> Option<na::DVector<f64>> {
-    //     let s = self.calculate_s()?;
-    //     let e = self.calculate_e();
-    //     let delta_a = s.lu().solve(&e?).unwrap();
-    //     let delta_b = self.calculate_delta_b(&delta_a)?;
+    pub fn calculate_delta_step(&self) -> Option<na::DVector<f64>> {
+        let s = self.calculate_s()?;
+        let e = self.calculate_e();
+        let delta_a = s.lu().solve(&e?).unwrap();
+        let delta_b = self.calculate_delta_b(&delta_a)?;
 
-    //     let mut delta = na::DVector::<f64>::zeros(delta_a.len() + delta_b.len());
-    //     delta.rows_mut(0, delta_a.len()).copy_from(&delta_a);
-    //     delta
-    //         .rows_mut(delta_a.len(), delta_b.len())
-    //         .copy_from(&delta_b);
+        let mut delta = na::DVector::<f64>::zeros(delta_a.len() + delta_b.len());
+        delta.rows_mut(0, delta_a.len()).copy_from(&delta_a);
+        delta
+            .rows_mut(delta_a.len(), delta_b.len())
+            .copy_from(&delta_b);
 
-    //     Some(delta)
-    // }
+        Some(delta)
+    }
 
-    // pub fn optimize(&mut self) -> Option<()>{
-    //     let mut v = self.lm_params.v;
-    //     let mut e = self.calculate_residual();
-    //     let mut jt_residual = self.calculate_jt_residual();
-    //     let mut stop = jt_residual.abs().max() < self.lm_params.eps1;
-    //     let mut k = 0;
+    pub fn optimize(&mut self) -> Option<()>{
+        let mut v = self.lm_params.v;
+        let mut e = self.calculate_residual();
+        let mut jt_residual = self.calculate_jt_residual();
+        let mut stop = jt_residual.abs().max() < self.lm_params.eps1;
+        let mut k = 0;
 
-    //     while k < self.lm_params.max_iter && !stop {
-    //         k += 1;
-    //         let rho = 0.0;
-    //         while rho <= 0.0 && !stop {
-    //             if k == 1 {
-    //                 self.init_u();
-    //             }
-    //             let delta = self.calculate_delta_step()?;
-    //             if delta.norm() <= self.lm_params.eps2 * self.params_norm() {
-    //                 stop = true;
-    //             } else {
-    //                 self.update_params(&delta);
-    //                 let e1 = self.calculate_residual();
-    //                 let rho = (e.norm().powi(2) - e1.norm().powi(2)) / (delta.transpose() * (self.lm_params.u * delta - &jt_residual))[0];
-    //                 if rho > 0.0 {
-    //                     e = e1;
-    //                     jt_residual = self.calculate_jt_residual();
-    //                     stop = jt_residual.abs().max() < self.lm_params.eps1 || e.norm() < self.lm_params.eps3;
-    //                     self.lm_params.u *= f64::max(1.0 / 3.0, 1.0 - (2.0 * rho - 1.0).powi(3));
-    //                     v = 2.0;
-    //                 } else {
-    //                     self.lm_params.u *= v;
-    //                     v *= 2.0;
-    //                 }   
-    //             }
-    //         }
-    //     }
+        while k < self.lm_params.max_iter && !stop {
+            k += 1;
+            let rho = 0.0;
+            while rho <= 0.0 && !stop {
+                if k == 1 {
+                    self.init_u();
+                }
+                let delta = self.calculate_delta_step()?;
+                if delta.norm() <= self.lm_params.eps2 * self.params_norm() {
+                    stop = true;
+                } else {
+                    self.update_params(&delta);
+                    let e1 = self.calculate_residual();
+                    let rho = (e.norm().powi(2) - e1.norm().powi(2)) / (delta.transpose() * (self.lm_params.u * delta - &jt_residual))[0];
+                    if rho > 0.0 {
+                        e = e1;
+                        jt_residual = self.calculate_jt_residual();
+                        stop = jt_residual.abs().max() < self.lm_params.eps1 || e.norm() < self.lm_params.eps3;
+                        self.lm_params.u *= f64::max(1.0 / 3.0, 1.0 - (2.0 * rho - 1.0).powi(3));
+                        v = 2.0;
+                    } else {
+                        self.lm_params.u *= v;
+                        v *= 2.0;
+                    }   
+                }
+            }
+        }
 
-    //     Some(())
-    // }
+        Some(())
+    }
 }
 
 // pub struct CameraVertex {
@@ -736,7 +769,7 @@ mod tests{
         edges: Vec<usize>,
     }
 
-    impl super::Vertex for CameraVertex {
+    impl super::Id for CameraVertex {
         fn id(&self) -> usize {
             self.id
         }
@@ -744,7 +777,9 @@ mod tests{
         fn id_mut(&mut self) -> &mut usize {
             &mut self.id
         }
+    }
 
+    impl super::Vertex for CameraVertex {
         fn edges(&self) -> &Vec<usize> {
             &self.edges
         }
@@ -759,6 +794,14 @@ mod tests{
 
         fn plus(&mut self, delta: &na::DVector<f64>) {
         }
+
+        fn dimension(&self) -> usize {
+            self.params().len()
+        }
+
+        fn add_edge(&mut self, id: usize) {
+            self.edges_mut().push(id);
+        }
     }
 
     struct PointVertex {
@@ -767,7 +810,7 @@ mod tests{
         edges: Vec<usize>,
     }
 
-    impl super::Vertex for PointVertex {
+    impl super::Id for PointVertex {
         fn id(&self) -> usize {
             self.id
         }
@@ -775,7 +818,9 @@ mod tests{
         fn id_mut(&mut self) -> &mut usize {
             &mut self.id
         }
+    }
 
+    impl super::Vertex for PointVertex {
         fn edges(&self) -> &Vec<usize> {
             &self.edges
         }
@@ -799,7 +844,7 @@ mod tests{
         measurement: na::DVector<f64>,        
     }
 
-    impl super::Edge for ProjectEdge {
+    impl super::Id for ProjectEdge {
         fn id(&self) -> usize {
             self.id
         }
@@ -807,7 +852,9 @@ mod tests{
         fn id_mut(&mut self) -> &mut usize {
             &mut self.id
         }
+    }
 
+    impl super::Edge for ProjectEdge {
         fn vertex(&self, ith: usize) -> super::VertexBase {
             self.vertices[ith].clone()
         }
@@ -824,7 +871,7 @@ mod tests{
             na::DVector::<f64>::zeros(self.measurement.len())
         }
 
-        fn jacobain(&self, ith: usize) -> na::DMatrix<f64> {
+        fn jacobian(&self, ith: usize) -> na::DMatrix<f64> {
             na::DMatrix::<f64>::zeros(self.measurement.len(), self.vertices[ith].borrow().dimension())
         }
 
@@ -835,34 +882,21 @@ mod tests{
 
     #[test]
     fn test_graph() {
-        fn create(id: usize, params: na::DVector<f64>, edges: Vec<usize>) -> super::VertexBase {
-            Rc::new(RefCell::new(CameraVertex {
-                id, params, edges
-            }))
-        }
         let camera_vertices: Vec<super::VertexBase> = (0..3usize).into_iter().map(|x| {
-            // Rc::new(RefCell::new(CameraVertex {
-            //     id: x,
-            //     params: na::DVector::<f64>::zeros(9),
-            //     edges: Vec::new(),
-            // })) as super::VertexBase
-            create(x, na::DVector::<f64>::zeros(9), Vec::new())
+            Rc::new(RefCell::new(CameraVertex {
+                id: x,
+                params: na::DVector::<f64>::zeros(9),
+                edges: Vec::new(),
+            })) as super::VertexBase
         }).collect::<Vec<super::VertexBase>>();
-        // let camera_vertex0: Rc<RefCell<dyn Vertex>> = Rc::new(RefCell::new(
-        //     CameraVertex {
-        //         id: 0,
-        //         params: na::DVector::<f64>::zeros(9),
-        //         edges: Vec::new(),
-        //     }
-        // ));
-        // let camera_vertices = vec![camera_vertex0];
 
         let point_vertices = (0..10usize).into_iter().map(|x| {
             Rc::new(RefCell::new(PointVertex {
                 id: x + 3,
                 params: na::DVector::<f64>::zeros(3),
                 edges: Vec::new(),
-            })) as super::VertexBase
+            })) 
+            as super::VertexBase
         }).collect::<Vec<_>>();
 
         let edge1: Rc<RefCell<dyn super::Edge>> = Rc::new(RefCell::new(ProjectEdge {
@@ -882,6 +916,13 @@ mod tests{
         }
         for vertex in edge1.borrow().vertices().iter() {
             println!("vertex: {}", vertex.borrow().id());
+        }
+
+        graph.optimize();
+        for vertex_set in graph.vertices {
+            for vertex in vertex_set {
+                println!("vertex: {}", vertex.borrow().params());
+            }
         }
     }
 }
