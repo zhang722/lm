@@ -1,4 +1,5 @@
 mod graph;
+mod ba_problem;
 
 use nalgebra as na;
 

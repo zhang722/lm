@@ -1,4 +1,4 @@
-use std::{ collections::HashMap, cell::RefCell, rc::Rc };
+use std::{ collections::HashMap, cell::RefCell, rc::Rc};
 
 use nalgebra as na;
 
@@ -21,7 +21,7 @@ pub trait Vertex : Id {
     }
 }
 
-type VertexBase = Rc<RefCell<dyn Vertex>>;
+pub type VertexBase = Rc<RefCell<dyn Vertex>>;
 
 pub trait Edge: Id {
     fn vertex(&self, ith: usize) -> VertexBase;
@@ -40,7 +40,7 @@ pub trait Edge: Id {
     }
 }
 
-type EdgeBase = Rc<RefCell<dyn Edge>>;
+pub type EdgeBase = Rc<RefCell<dyn Edge>>;
 
 pub struct LmParams {
     tau: f64,
@@ -62,9 +62,9 @@ impl LmParams {
 }
 
 pub struct Graph {
-    vertices: Vec<Vec<VertexBase>>,
-    edges: HashMap<usize, EdgeBase>,
-    lm_params: LmParams,
+    pub vertices: Vec<Vec<VertexBase>>,
+    pub edges: HashMap<usize, EdgeBase>,
+    pub lm_params: LmParams,
 }
 
 impl Graph {
@@ -129,7 +129,7 @@ impl Graph {
             }
         }
 
-        let idx = 0;
+        let mut idx = 0;
         let mut params = na::DVector::<f64>::zeros(dim_total);
         for vertex_set in self.vertices.iter() {
             for vertex in vertex_set {
@@ -137,6 +137,7 @@ impl Graph {
                 params.rows_mut(idx, dim).copy_from(
                     vertex.borrow().params()
                 );
+                idx += dim;
             }
         }
 
@@ -148,7 +149,7 @@ impl Graph {
     }
 
     fn init_u(&self) -> f64 {
-        todo!()
+        0.01
     }
 
     pub fn calculate_residual(&self) -> na::DVector<f64> {
@@ -179,7 +180,8 @@ impl Graph {
 
         for edge in vertex0_j.borrow().edges().iter() {
             if let Some(edge) = self.edge(*edge) {
-                res += edge.borrow().jacobian(0).transpose() * edge.borrow().sigma() * edge.borrow().residual();
+                let tmp = edge.borrow().jacobian(0).transpose() * edge.borrow().sigma() * edge.borrow().residual();
+                res += tmp;
             }
         }
 
@@ -215,6 +217,7 @@ impl Graph {
         let mut idx = 0;
         for (vertex0_j, vertex) in self.vertices[0].iter().enumerate() {
             let dim = vertex.borrow().dimension();
+            println!("vertex0_j: {}", vertex0_j);
             
             jt_residual.rows_mut(idx, dim).copy_from(
                 &self.calculate_jt_residual_aj(vertex0_j)
@@ -255,7 +258,7 @@ impl Graph {
 
     #[inline]
     fn calculate_v_inv(&self, vertex1_i: usize) -> Option<na::DMatrix<f64>> {
-        assert!(self.vertices[0].len() > vertex1_i);
+        assert!(self.vertices[1].len() > vertex1_i);
         let vertex1_i = self.vertices[1][vertex1_i].clone();
         let mut res = na::DMatrix::<f64>::zeros(
             vertex1_i.borrow().dimension(),
@@ -326,8 +329,8 @@ impl Graph {
                     s_jk += u;
                 }
                 for (vertex1_i, vertex ) in self.vertices[1].iter().enumerate() {
-                    let y_ij = self.calculate_y(vertex1_i, view_j)?;
-                    let w_ik = self.calculate_w(vertex1_i, view_k);
+                    let y_ij = self.calculate_y(view_j, vertex1_i)?;
+                    let w_ik = self.calculate_w(view_k, vertex1_i);
                     let y_ij_w = y_ij * w_ik.transpose();
                     s_jk -= y_ij_w;
                 }
@@ -385,7 +388,7 @@ impl Graph {
     }
 
     fn calculate_delta_b(&self, delta_a: &na::DVector<f64>) -> Option<na::DVector<f64>> {
-        let dim = self.vertices[0].iter().fold(0usize, |acc, x| {
+        let dim = self.vertices[1].iter().fold(0usize, |acc, x| {
             acc + x.borrow().dimension()
         });
         let mut b = na::DVector::zeros(dim);
@@ -397,7 +400,7 @@ impl Graph {
                 for (vertex0_j, vertex0) in self.vertices[0].iter().enumerate() {
                     let dim0 = vertex0.borrow().dimension();
                     let delta_aj = delta_a.rows(idx, dim0).clone_owned();
-                    e_i -= self.calculate_w(vertex0_j, vertex1_i) * delta_aj;
+                    e_i -= self.calculate_w(vertex0_j, vertex1_i).transpose() * delta_aj;
                     idx += dim0;
                 }
                 
@@ -423,10 +426,15 @@ impl Graph {
     }
 
     pub fn calculate_delta_step(&self) -> Option<na::DVector<f64>> {
+        println!("1");
         let s = self.calculate_s()?;
+        println!("2");
         let e = self.calculate_e();
+        println!("3");
         let delta_a = s.lu().solve(&e?).unwrap();
+        println!("4");
         let delta_b = self.calculate_delta_b(&delta_a)?;
+        println!("5");
 
         let mut delta = na::DVector::<f64>::zeros(delta_a.len() + delta_b.len());
         delta.rows_mut(0, delta_a.len()).copy_from(&delta_a);
@@ -445,19 +453,20 @@ impl Graph {
         let mut k = 0;
 
         while k < self.lm_params.max_iter && !stop {
+            println!("k: {}", k);
             k += 1;
-            let rho = 0.0;
+            let mut rho = 0.0;
+            if k == 1 {
+                self.init_u();
+            }
             while rho <= 0.0 && !stop {
-                if k == 1 {
-                    self.init_u();
-                }
                 let delta = self.calculate_delta_step()?;
                 if delta.norm() <= self.lm_params.eps2 * self.params_norm() {
                     stop = true;
                 } else {
                     self.update_params(&delta);
                     let e1 = self.calculate_residual();
-                    let rho = (e.norm().powi(2) - e1.norm().powi(2)) / (delta.transpose() * (self.lm_params.u * delta - &jt_residual))[0];
+                    rho = (e.norm().powi(2) - e1.norm().powi(2)) / (delta.transpose() * (self.lm_params.u * delta - &jt_residual))[0];
                     if rho > 0.0 {
                         e = e1;
                         jt_residual = self.calculate_jt_residual();
@@ -476,286 +485,303 @@ impl Graph {
     }
 }
 
-// pub struct CameraVertex {
-//     id: usize,
-//     edges: Vec<usize>,
-//     params: na::DVector<f64>,
-// }
 
-// impl Vertex for CameraVertex {
-//     fn id(&self) -> usize {
-//         self.id
-//     }
+type CameraInstrinsics = na::Vector3<f64>;
 
-//     fn edges(&self) -> Vec<usize> {
-//         self.edges        
-//     }
+fn jacobian_pp_wrt_pn(
+    pn: &na::Vector2<f64>, 
+    intrinsics: &CameraInstrinsics,
+) -> na::Matrix2<f64> 
+{
+    let f = intrinsics[0];
+    let k1 = intrinsics[1];
+    let k2 = intrinsics[2];
+    let x = pn[0];
+    let y = pn[1];
 
-//     fn dimension(&self) -> usize {
-//         9
-//     }
+    let rn2 = x.powi(2) + y.powi(2);
+    let rn4 = rn2.powi(2);
 
-//     fn params(&self) -> &na::DVector<f64> {
-//         &self.params
-//     }
+    na::Matrix2::<f64>::new(
+        f * (k1 * rn2 + k2 * rn4 + 1.0), 0.0,
+        0.0, f * (k1 * rn2 + k2 * rn4 + 1.0)
+    )
+}
 
-//     fn plus(&mut self, delta: &na::DVector<f64>) {
-//         self.params += delta;
-//     }
-// }
+fn jacobian_pn_wrt_ps(
+    ps: &na::Vector3<f64>,
+) -> na::Matrix2x3<f64>
+{
+    let x = ps[0];
+    let y = ps[1];
+    let z = ps[2];
+    let z2 = z.powi(2);
 
-// pub struct PointVertex {
-//     id: usize,
-//     edges: Vec<usize>,
-//     params: na::DVector<f64>,
-// }
+    -na::Matrix2x3::<f64>::new(
+        1.0 / z, 0.0, -x / z2, 
+        0.0, 1.0 / z, -y / z2)
+}
 
-// impl Vertex for PointVertex {
-//     fn id(&self) -> usize {
-//         self.id
-//     }
+/// Produces a skew-symmetric or "cross-product matrix" from
+/// a 3-vector. This is needed for the `exp_map` and `log_map`
+/// functions
+fn skew_sym(v: na::Vector3<f64>) -> na::Matrix3<f64> {
+    let mut ss = na::Matrix3::zeros();
+    ss[(0, 1)] = -v[2];
+    ss[(0, 2)] = v[1];
+    ss[(1, 0)] = v[2];
+    ss[(1, 2)] = -v[0];
+    ss[(2, 0)] = -v[1];
+    ss[(2, 1)] = v[0];
+    ss
+}
 
-//     fn edges(&self) -> Vec<usize> {
-//         self.edges
-//     }
+/// Converts an NAlgebra Isometry to a 6-Vector Lie Algebra representation
+/// of a rigid body transform.
+///
+/// This is largely taken from this paper:
+/// https://ingmec.ual.es/~jlblanco/papers/jlblanco2010geometry3D_techrep.pdf
+fn log_map(input: &na::Isometry3<f64>) -> na::Vector6<f64> {
+    let t: na::Vector3<f64> = input.translation.vector;
 
-//     fn dimension(&self) -> usize {
-//         3
-//     }
+    let quat = input.rotation;
+    let theta: f64 = 2.0 * (quat.scalar()).acos();
+    let half_theta = 0.5 * theta;
+    let mut omega = na::Vector3::<f64>::zeros();
 
-//     fn params(&self) -> &na::DVector<f64> {
-//         &self.params
-//     }
+    let mut v_inv = na::Matrix3::<f64>::identity();
+    if theta > 1e-6 {
+        omega = quat.vector() * theta / (half_theta.sin());
+        let ssym_omega = skew_sym(omega);
+        v_inv -= ssym_omega * 0.5;
+        v_inv += ssym_omega * ssym_omega * (1.0 - half_theta * half_theta.cos() / half_theta.sin())
+            / (theta * theta);
+    }
 
-//     fn plus(&mut self, delta: &na::DVector<f64>) {
-//         self.params += delta;
-//     }
-// }
+    let mut ret = na::Vector6::<f64>::zeros();
+    ret.fixed_view_mut::<3, 1>(0, 0).copy_from(&(v_inv * t));
+    ret.fixed_view_mut::<3, 1>(3, 0).copy_from(&omega);
 
-// pub struct Point3dProjectEdge {
-//     id: usize,
-//     vertices: Vec<usize>,
-//     sigma: na::DMatrix<f64>,
-//     measurement: na::DVector<f64>,
-// }
+    ret
+}
 
-// type CameraInstrinsics = na::Vector3<f64>;
+fn jacobian_ps_wrt_pose(
+    ps: &na::Vector3<f64>,
+) -> na::Matrix3x6<f64>
+{
+    let x = ps[0];
+    let y = ps[1];
+    let z = ps[2];
 
-// fn jacobian_pp_wrt_pn(
-//     pn: &na::Vector2<f64>, 
-//     intrinsics: &CameraInstrinsics,
-// ) -> na::Matrix2<f64> 
-// {
-//     let f = intrinsics[0];
-//     let k1 = intrinsics[1];
-//     let k2 = intrinsics[2];
-//     let x = pn[0];
-//     let y = pn[1];
+    let mut jac = na::Matrix3x6::<f64>::zeros();
+    jac.fixed_view_mut::<3, 3>(0, 3).copy_from(&na::Matrix3::<f64>::identity());
+    jac.fixed_view_mut::<3, 3>(0, 0).copy_from(&-skew_sym(na::Vector3::<f64>::new(x, y, z)));
+    jac
+}
 
-//     let rn2 = x.powi(2) + y.powi(2);
-//     let rn4 = rn2.powi(2);
+fn jacobian_ps_wrt_pw(
+    Rsw: &na::Rotation3<f64>,
+) -> na::Matrix3<f64>
+{
+    let mut jac = na::Matrix3::<f64>::zeros();
+    jac.copy_from(Rsw.matrix());
+    jac
+}
 
-//     na::Matrix2::<f64>::new(
-//         f * (k1 * rn2 + k2 * rn4 + 1.0), 0.0,
-//         0.0, f * (k1 * rn2 + k2 * rn4 + 1.0)
-//     )
-// }
+fn jacobian_pp_wrt_intrinsics(
+    pn: &na::Vector2<f64>,
+    intrinsics: &CameraInstrinsics,
+) -> na::Matrix2x3<f64>
+{
+    let f = intrinsics[0];
+    let k1 = intrinsics[1];
+    let k2 = intrinsics[2];
+    let x = pn[0];
+    let y = pn[1];
 
-// fn jacobian_pn_wrt_ps(
-//     ps: &na::Vector3<f64>,
-// ) -> na::Matrix2x3<f64>
-// {
-//     let x = ps[0];
-//     let y = ps[1];
-//     let z = ps[2];
-//     let z2 = z.powi(2);
+    let rn2 = x.powi(2) + y.powi(2);
+    let rn4 = rn2.powi(2);
 
-//     -na::Matrix2x3::<f64>::new(
-//         1.0 / z, 0.0, -x / z2, 
-//         0.0, 1.0 / z, -y / z2)
-// }
+    na::Matrix2x3::<f64>::new(
+        x * (k1 * rn2 + k2 * rn4 + 1.0), f * rn2 * x, f * rn4 * x,
+        y * (k1 * rn2 + k2 * rn4 + 1.0), f * rn2 * y, f * rn4 * y
+    )
+}
 
-// /// Produces a skew-symmetric or "cross-product matrix" from
-// /// a 3-vector. This is needed for the `exp_map` and `log_map`
-// /// functions
-// fn skew_sym(v: na::Vector3<f64>) -> na::Matrix3<f64> {
-//     let mut ss = na::Matrix3::zeros();
-//     ss[(0, 1)] = -v[2];
-//     ss[(0, 2)] = v[1];
-//     ss[(1, 0)] = v[2];
-//     ss[(1, 2)] = -v[0];
-//     ss[(2, 0)] = -v[1];
-//     ss[(2, 1)] = v[0];
-//     ss
-// }
+pub struct CameraVertex {
+    pub id: usize,
+    pub params: na::DVector<f64>,
+    pub edges: Vec<usize>,
+}
 
-// /// Converts an NAlgebra Isometry to a 6-Vector Lie Algebra representation
-// /// of a rigid body transform.
-// ///
-// /// This is largely taken from this paper:
-// /// https://ingmec.ual.es/~jlblanco/papers/jlblanco2010geometry3D_techrep.pdf
-// fn log_map(input: &na::Isometry3<f64>) -> na::Vector6<f64> {
-//     let t: na::Vector3<f64> = input.translation.vector;
+impl Id for CameraVertex {
+    fn id(&self) -> usize {
+        self.id
+    }
 
-//     let quat = input.rotation;
-//     let theta: f64 = 2.0 * (quat.scalar()).acos();
-//     let half_theta = 0.5 * theta;
-//     let mut omega = na::Vector3::<f64>::zeros();
+    fn id_mut(&mut self) -> &mut usize {
+        &mut self.id
+    }
+}
 
-//     let mut v_inv = na::Matrix3::<f64>::identity();
-//     if theta > 1e-6 {
-//         omega = quat.vector() * theta / (half_theta.sin());
-//         let ssym_omega = skew_sym(omega);
-//         v_inv -= ssym_omega * 0.5;
-//         v_inv += ssym_omega * ssym_omega * (1.0 - half_theta * half_theta.cos() / half_theta.sin())
-//             / (theta * theta);
-//     }
+impl Vertex for CameraVertex {
+    fn edges(&self) -> &Vec<usize> {
+        &self.edges
+    }
 
-//     let mut ret = na::Vector6::<f64>::zeros();
-//     ret.fixed_view_mut::<3, 1>(0, 0).copy_from(&(v_inv * t));
-//     ret.fixed_view_mut::<3, 1>(3, 0).copy_from(&omega);
+    fn edges_mut(&mut self) -> &mut Vec<usize> {
+        &mut self.edges
+    }
 
-//     ret
-// }
+    fn params(&self) -> &na::DVector<f64> {
+        &self.params
+    }
 
-// fn jacobian_ps_wrt_pose(
-//     ps: &na::Vector3<f64>,
-// ) -> na::Matrix3x6<f64>
-// {
-//     let x = ps[0];
-//     let y = ps[1];
-//     let z = ps[2];
+    fn plus(&mut self, delta: &na::DVector<f64>) {
+        self.params += delta;
+    }
 
-//     let mut jac = na::Matrix3x6::<f64>::zeros();
-//     jac.fixed_view_mut::<3, 3>(0, 3).copy_from(&na::Matrix3::<f64>::identity());
-//     jac.fixed_view_mut::<3, 3>(0, 0).copy_from(&-skew_sym(na::Vector3::<f64>::new(x, y, z)));
-//     jac
-// }
+    fn dimension(&self) -> usize {
+        self.params().len()
+    }
 
-// fn jacobian_ps_wrt_pw(
-//     Rsw: &na::Rotation3<f64>,
-// ) -> na::Matrix3<f64>
-// {
-//     let mut jac = na::Matrix3::<f64>::zeros();
-//     jac.copy_from(Rsw.matrix());
-//     jac
-// }
+    fn add_edge(&mut self, id: usize) {
+        self.edges_mut().push(id);
+    }
+}
 
-// fn jacobian_pp_wrt_intrinsics(
-//     pn: &na::Vector2<f64>,
-//     intrinsics: &CameraInstrinsics,
-// ) -> na::Matrix2x3<f64>
-// {
-//     let f = intrinsics[0];
-//     let k1 = intrinsics[1];
-//     let k2 = intrinsics[2];
-//     let x = pn[0];
-//     let y = pn[1];
+pub struct PointVertex {
+    pub id: usize,
+    pub params: na::DVector<f64>,
+    pub edges: Vec<usize>,
+}
 
-//     let rn2 = x.powi(2) + y.powi(2);
-//     let rn4 = rn2.powi(2);
+impl Id for PointVertex {
+    fn id(&self) -> usize {
+        self.id
+    }
 
-//     na::Matrix2x3::<f64>::new(
-//         x * (k1 * rn2 + k2 * rn4 + 1.0), f * rn2 * x, f * rn4 * x,
-//         y * (k1 * rn2 + k2 * rn4 + 1.0), f * rn2 * y, f * rn4 * y
-//     )
-// }
+    fn id_mut(&mut self) -> &mut usize {
+        &mut self.id
+    }
+}
 
-// impl Edge for Point3dProjectEdge {
-//     fn dimension(&self) -> usize {
-//         2        
-//     }
+impl Vertex for PointVertex {
+    fn edges(&self) -> &Vec<usize> {
+        &self.edges
+    }
 
-//     fn residual(&self) -> na::DVector<f64> {
-//         let camera = &self.vertex0.as_ref().params;
-//         let point3d = &self.vertex1.as_ref().params;
+    fn edges_mut(&mut self) -> &mut Vec<usize> {
+        &mut self.edges
+    }
 
-//         let rotation = na::Rotation3::new(
-//             na::Vector3::<f64>::new(camera[0], camera[1], camera[2])
-//         );
-//         let t = na::Vector3::<f64>::new(camera[3], camera[4], camera[5]);
-//         let f = camera[6];
-//         let k1 = camera[7];
-//         let k2 = camera[8];
+    fn params(&self) -> &na::DVector<f64> {
+        &self.params
+    }
 
-//         let ps = rotation * point3d + t;
-//         let pn = -ps / ps.z;
-//         let pn = pn.fixed_view::<2, 1>(0, 0);
-//         let pp = f * (1.0 + k1 * pn.norm().powi(2) + k2 * pn.norm().powi(4)) * pn;
-//         let mut res = na::DVector::zeros(pp.len());
-//         res.fixed_view_mut::<2, 1>(0, 0).copy_from(
-//             &(pp - na::Vector2::new(self.measurement[0], self.measurement[1]))
-//         );
+    fn plus(&mut self, delta: &na::DVector<f64>) {
+        self.params += delta;
+    }
+}
 
-//         res
-//     }
+pub struct Point3dProjectEdge {
+    pub id: usize,
+    pub vertices: Vec<VertexBase>,
+    pub sigma: na::DMatrix<f64>,
+    pub measurement: na::DVector<f64>,        
+}
 
-//     fn jacobian0(&self) -> na::DMatrix<f64> {
-//         let camera = &self.vertex0.as_ref().params;
-//         let point3d = &self.vertex1.as_ref().params;
+impl Id for Point3dProjectEdge {
+    fn id(&self) -> usize {
+        self.id
+    }
 
-//         let mut jac = na::DMatrix::zeros(2, camera.len());
+    fn id_mut(&mut self) -> &mut usize {
+        &mut self.id
+    }
+}
 
-//         let rotation = na::Rotation3::new(
-//             na::Vector3::<f64>::new(camera[0], camera[1], camera[2])
-//         );
-//         let t = na::Vector3::<f64>::new(camera[3], camera[4], camera[5]);
-//         let intrinsics = na::Vector3::<f64>::new(camera[6], camera[7], camera[8]);
+impl Edge for Point3dProjectEdge {
+    fn vertex(&self, ith: usize) -> VertexBase {
+        self.vertices[ith].clone()
+    }
 
-//         let ps = rotation * point3d + t;
-//         let pn = -ps / ps.z;
-//         let pn = pn.fixed_view::<2, 1>(0, 0).clone_owned();
+    fn vertices(&self) -> &Vec<VertexBase> {
+        &self.vertices
+    }
 
-//         let jacobian_r_wrt_pose = jacobian_pp_wrt_pn(&pn, &intrinsics) 
-//             * jacobian_pn_wrt_ps(&ps) 
-//             * jacobian_ps_wrt_pose(&ps);
-//         let jacobian_r_wrt_intrinsics = jacobian_pp_wrt_intrinsics(&pn, &intrinsics);
+    fn vertices_mut(&mut self) -> &mut Vec<VertexBase> {
+        &mut self.vertices
+    }
+
+    fn residual(&self) -> na::DVector<f64> {
+        let camera = self.vertex(0);
+        let point3d = self.vertices[1].borrow();
+        let camera = camera.borrow();
+        let camera = camera.params();
+        let point3d = point3d.params();
+
+        let rotation = na::Rotation3::new(
+            na::Vector3::<f64>::new(camera[0], camera[1], camera[2])
+        );
+        let t = na::Vector3::<f64>::new(camera[3], camera[4], camera[5]);
+        let f = camera[6];
+        let k1 = camera[7];
+        let k2 = camera[8];
+
+        let ps = rotation * point3d + t;
+        let pn = -ps / ps.z;
+        let pn = pn.fixed_view::<2, 1>(0, 0);
+        let pp = f * (1.0 + k1 * pn.norm().powi(2) + k2 * pn.norm().powi(4)) * pn;
+        let mut res = na::DVector::zeros(pp.len());
+        res.fixed_view_mut::<2, 1>(0, 0).copy_from(
+            &(pp - na::Vector2::new(self.measurement[0], self.measurement[1]))
+        );
+
+        res
+    }
+
+    fn jacobian(&self, ith: usize) -> na::DMatrix<f64> {
+        let camera = self.vertices[0].borrow();
+        let camera = camera.params();
+        let point3d = self.vertices[1].borrow();
+        let point3d = point3d.params();
+
+        let rotation = na::Rotation3::new(
+            na::Vector3::<f64>::new(camera[0], camera[1], camera[2])
+        );
+        let t = na::Vector3::<f64>::new(camera[3], camera[4], camera[5]);
+        let intrinsics = na::Vector3::<f64>::new(camera[6], camera[7], camera[8]);
+
+        let ps = rotation * point3d + t;
+        let pn = -ps / ps.z;
+        let pn = pn.fixed_view::<2, 1>(0, 0).clone_owned();
+
+        let jacobian_r_wrt_pose = jacobian_pp_wrt_pn(&pn, &intrinsics) 
+            * jacobian_pn_wrt_ps(&ps) 
+            * jacobian_ps_wrt_pose(&ps);
+        let jacobian_r_wrt_intrinsics = jacobian_pp_wrt_intrinsics(&pn, &intrinsics);
+
+        let jacobian_r_wrt_pw = jacobian_pp_wrt_pn(&pn, &intrinsics) 
+            * jacobian_pn_wrt_ps(&ps) 
+            * jacobian_ps_wrt_pw(&rotation);
+        let mut jacobian_r_wrt_camera = na::DMatrix::<f64>::zeros(
+            jacobian_r_wrt_pose.nrows(), jacobian_r_wrt_pose.ncols() + jacobian_r_wrt_intrinsics.ncols());
+        jacobian_r_wrt_camera.view_mut((0, 0), jacobian_r_wrt_pose.shape()).copy_from(&jacobian_r_wrt_pose);
+        jacobian_r_wrt_camera.view_mut((0, jacobian_r_wrt_pose.ncols()), jacobian_r_wrt_intrinsics.shape()).copy_from(&jacobian_r_wrt_intrinsics);
         
-//         jac.fixed_view_mut::<2, 6>(0, 0)
-//             .copy_from(&jacobian_r_wrt_pose);
-//         jac.fixed_view_mut::<2, 3>(0, 6)
-//             .copy_from(&jacobian_r_wrt_intrinsics);
-        
-//         jac
-//     }
+        if ith == 0 {
+            jacobian_r_wrt_camera
+        } else {
+            jacobian_r_wrt_pw.view((0, 0), jacobian_r_wrt_pw.shape()).clone_owned()
+        }
+    }
 
-//     fn jacobian1(&self) -> na::DMatrix<f64> {
-//         let camera = &self.vertex0.as_ref().params;
-//         let point3d = &self.vertex1.as_ref().params;
+    fn sigma(&self) -> na::DMatrix<f64> {
+        na::DMatrix::<f64>::identity(self.measurement.len(), self.measurement.len())
+    }
+}
 
-//         let mut jac = na::DMatrix::zeros(2, point3d.len());
-
-//         let rotation = na::Rotation3::new(
-//             na::Vector3::<f64>::new(camera[0], camera[1], camera[2])
-//         );
-//         let t = na::Vector3::<f64>::new(camera[3], camera[4], camera[5]);
-//         let intrinsics = na::Vector3::<f64>::new(camera[6], camera[7], camera[8]);
-
-//         let ps = rotation * point3d + t;
-//         let pn = -ps / ps.z;
-//         let pn = pn.fixed_view::<2, 1>(0, 0).clone_owned();
-
-//         let jacobian_r_wrt_pw = jacobian_pp_wrt_pn(&pn, &intrinsics) 
-//             * jacobian_pn_wrt_ps(&ps) 
-//             * jacobian_ps_wrt_pw(&rotation);
-//         jac.fixed_view_mut::<2, 3>(0, 0)
-//             .copy_from(&jacobian_r_wrt_pw); 
-
-//         jac
-//     }
-
-//     fn sigma(&self) -> na::DMatrix<f64> {
-//         na::DMatrix::<f64>::identity(2, 2)
-//     }
-
-//     fn id(&self) -> usize {
-//         self.id
-//     }
-
-//     fn vertices(&self) -> Vec<usize> {
-//         self.vertices
-//     }
-// }
 
 mod tests{
     use std::{rc::Rc, cell::RefCell};
@@ -763,127 +789,11 @@ mod tests{
     use nalgebra as na;
 
     use super::{Edge, Vertex};
-    struct CameraVertex {
-        id: usize,
-        params: na::DVector<f64>,
-        edges: Vec<usize>,
-    }
-
-    impl super::Id for CameraVertex {
-        fn id(&self) -> usize {
-            self.id
-        }
-
-        fn id_mut(&mut self) -> &mut usize {
-            &mut self.id
-        }
-    }
-
-    impl super::Vertex for CameraVertex {
-        fn edges(&self) -> &Vec<usize> {
-            &self.edges
-        }
-
-        fn edges_mut(&mut self) -> &mut Vec<usize> {
-            &mut self.edges
-        }
-
-        fn params(&self) -> &na::DVector<f64> {
-            &self.params
-        }
-
-        fn plus(&mut self, delta: &na::DVector<f64>) {
-        }
-
-        fn dimension(&self) -> usize {
-            self.params().len()
-        }
-
-        fn add_edge(&mut self, id: usize) {
-            self.edges_mut().push(id);
-        }
-    }
-
-    struct PointVertex {
-        id: usize,
-        params: na::DVector<f64>,
-        edges: Vec<usize>,
-    }
-
-    impl super::Id for PointVertex {
-        fn id(&self) -> usize {
-            self.id
-        }
-
-        fn id_mut(&mut self) -> &mut usize {
-            &mut self.id
-        }
-    }
-
-    impl super::Vertex for PointVertex {
-        fn edges(&self) -> &Vec<usize> {
-            &self.edges
-        }
-
-        fn edges_mut(&mut self) -> &mut Vec<usize> {
-            &mut self.edges
-        }
-
-        fn params(&self) -> &na::DVector<f64> {
-            &self.params
-        }
-
-        fn plus(&mut self, delta: &na::DVector<f64>) {
-        }
-    }
-
-    struct ProjectEdge {
-        id: usize,
-        vertices: Vec<super::VertexBase>,
-        sigma: na::DMatrix<f64>,
-        measurement: na::DVector<f64>,        
-    }
-
-    impl super::Id for ProjectEdge {
-        fn id(&self) -> usize {
-            self.id
-        }
-
-        fn id_mut(&mut self) -> &mut usize {
-            &mut self.id
-        }
-    }
-
-    impl super::Edge for ProjectEdge {
-        fn vertex(&self, ith: usize) -> super::VertexBase {
-            self.vertices[ith].clone()
-        }
-
-        fn vertices(&self) -> &Vec<super::VertexBase> {
-            &self.vertices
-        }
-
-        fn vertices_mut(&mut self) -> &mut Vec<super::VertexBase> {
-            &mut self.vertices
-        }
-
-        fn residual(&self) -> na::DVector<f64> {
-            na::DVector::<f64>::zeros(self.measurement.len())
-        }
-
-        fn jacobian(&self, ith: usize) -> na::DMatrix<f64> {
-            na::DMatrix::<f64>::zeros(self.measurement.len(), self.vertices[ith].borrow().dimension())
-        }
-
-        fn sigma(&self) -> na::DMatrix<f64> {
-            na::DMatrix::<f64>::zeros(self.measurement.len(), self.measurement.len())
-        }
-    }
 
     #[test]
     fn test_graph() {
         let camera_vertices: Vec<super::VertexBase> = (0..3usize).into_iter().map(|x| {
-            Rc::new(RefCell::new(CameraVertex {
+            Rc::new(RefCell::new(super::CameraVertex {
                 id: x,
                 params: na::DVector::<f64>::zeros(9),
                 edges: Vec::new(),
@@ -891,7 +801,7 @@ mod tests{
         }).collect::<Vec<super::VertexBase>>();
 
         let point_vertices = (0..10usize).into_iter().map(|x| {
-            Rc::new(RefCell::new(PointVertex {
+            Rc::new(RefCell::new(super::PointVertex {
                 id: x + 3,
                 params: na::DVector::<f64>::zeros(3),
                 edges: Vec::new(),
@@ -899,7 +809,7 @@ mod tests{
             as super::VertexBase
         }).collect::<Vec<_>>();
 
-        let edge1: Rc<RefCell<dyn super::Edge>> = Rc::new(RefCell::new(ProjectEdge {
+        let edge1: Rc<RefCell<dyn super::Edge>> = Rc::new(RefCell::new(super::Point3dProjectEdge {
             id: 1,
             vertices: Vec::new(),
             sigma: na::DMatrix::<f64>::zeros(2, 2),

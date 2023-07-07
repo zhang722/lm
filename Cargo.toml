@@ -9,3 +9,4 @@ edition = "2021"
 rand = { version = "0.8.5", default_features = false, features = ["std", "std_rng", "small_rng"] }
 nalgebra = { version = "0.32.2", features = ["rayon"] }
 rayon = "1.7.0"
+ply-rs = "0.1.3"
