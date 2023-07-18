@@ -64,7 +64,7 @@ impl LmParams {
         Self { tau, eps1, eps2, eps3, v, max_iter, u: 0.0 }
     }
     pub fn default() -> Self {
-        Self::new(1e-3, 1e-15, 1e-15, 1e-15, 2.0, 10)
+        Self::new(1e-3, 1e-15, 1e-6, 1e-15, 2.0, 100)
     }
 }
 
@@ -339,7 +339,7 @@ impl Graph {
         self.prepare_hessian_index();
 
         while k < self.lm_params.max_iter && !stop {
-            println!("k: {}", k);
+            println!("k: {}\t e: {}", k, e);
             k += 1;
             let mut rho = 0.0;
             if k == 1 {
@@ -352,7 +352,7 @@ impl Graph {
                 } else {
                     self.update_params(&delta);
                     let e1 = self.calculate_residual();
-                    rho = (e - e1) / (delta.transpose() * (self.lm_params.u * delta - &jt_residual))[0];
+                    rho = (e - e1) / ((delta.transpose() * (self.lm_params.u * delta + &jt_residual))[0] + 1e-3);
                     if rho > 0.0 {
                         e = e1;
                         jt_residual = self.calculate_jt_residual();
@@ -365,7 +365,6 @@ impl Graph {
                     }   
                 }
             }
-            println!("e: {}", e);
         }
 
         Some(())

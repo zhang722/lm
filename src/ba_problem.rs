@@ -189,7 +189,7 @@ fn test_ba_problem() {
     use crate::graph::*;
 
     let num_camera = 10;
-    let num_point = 5000;
+    let num_point = 100;
     let problem = BaProblem::new("problem-16-22106-pre.txt", num_camera, num_point);
     // let problem = BaProblem::generate();
     println!("num_observations: {}", problem.observations.len());
