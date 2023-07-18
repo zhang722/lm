@@ -188,14 +188,14 @@ fn savePly(filename: &str, vertices: &[f64]) {
 fn test_ba_problem() {
     use crate::graph::*;
 
-    let num_camera = 5;
-    let num_point = 500;
+    let num_camera = 10;
+    let num_point = 5000;
     let problem = BaProblem::new("problem-16-22106-pre.txt", num_camera, num_point);
     // let problem = BaProblem::generate();
     println!("num_observations: {}", problem.observations.len());
     println!("num_camera: {}", problem.cameras.len());
-    println!("params: {}", problem.parameters.norm());
-    // savePly("output.ply", &problem.parameters.as_slice()[9 * num_camera ..]);
+    println!("params: {}", problem.parameters.len());
+    savePly("output.ply", &problem.parameters.as_slice()[9 * num_camera ..]);
 
     let mut graph = crate::graph::Graph::default();
     let mut id = 0;
@@ -205,14 +205,19 @@ fn test_ba_problem() {
             id,
             params: x.clone(),
             edges: Vec::new(),
+            fixed: id == 1,
+            hessian_index: 0,
         })) as VertexBase
     }).collect::<Vec<_>>();
+
     let point_vertices = problem.points.iter().map(|x| {
         id += 1;
         Rc::new(RefCell::new(PointVertex {
             id,
             params: x.clone(),
             edges: Vec::new(),
+            fixed: false,
+            hessian_index: 0,
         })) as VertexBase
     }).collect::<Vec<_>>();
     id = 0;
@@ -233,4 +238,6 @@ fn test_ba_problem() {
     graph.add_vertex_set(point_vertices);
     println!("params: {}", graph.vertex2param().norm()); 
     graph.optimize();
+    println!("params: {}", graph.vertex2param().norm()); 
+    savePly("output_optimized.ply", &graph.vertex2param().as_slice()[9 * num_camera ..]);
 }

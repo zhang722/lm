@@ -13,6 +13,13 @@ pub trait Vertex : Id {
     fn params(&self) -> &na::DVector<f64>;
     fn plus(&mut self, delta: &na::DVector<f64>);
 
+    fn hessian_index(&self) -> usize;
+    fn hessian_index_mut(&mut self) -> &mut usize;
+
+    fn is_fixed(&self) -> bool {
+        false
+    }
+
     fn dimension(&self) -> usize {
         self.params().len()
     }
@@ -57,7 +64,7 @@ impl LmParams {
         Self { tau, eps1, eps2, eps3, v, max_iter, u: 0.0 }
     }
     pub fn default() -> Self {
-        Self::new(1e-3, 1e-15, 1e-15, 1e-15, 2.0, 100)
+        Self::new(1e-3, 1e-15, 1e-15, 1e-15, 2.0, 10)
     }
 }
 
@@ -65,6 +72,8 @@ pub struct Graph {
     pub vertices: Vec<Vec<VertexBase>>,
     pub edges: HashMap<usize, EdgeBase>,
     pub lm_params: LmParams,
+    hessian: na::DMatrix<f64>,
+    b: na::DVector<f64>,
 }
 
 impl Graph {
@@ -73,6 +82,8 @@ impl Graph {
             vertices: Vec::new(),
             edges: HashMap::<usize, EdgeBase>::new(),
             lm_params: LmParams::default(),
+            hessian: na::DMatrix::<f64>::zeros(0, 0),
+            b: na::DVector::<f64>::zeros(0),
         }
     }
 
@@ -108,11 +119,28 @@ impl Graph {
         self.edges.get(&id).cloned()
     }
 
+    pub fn params_dim(&self) -> usize {
+        let mut dim = 0;
+        for vertex_set in self.vertices.iter() {
+            for vertex in vertex_set {
+                if vertex.borrow().is_fixed() {
+                    continue;
+                }
+                dim += vertex.borrow().dimension();
+            }
+        }
+
+        dim
+    }
+
     pub fn update_params(&mut self, delta: &na::DVector<f64>) {
         let mut idx = 0;
         for vertex_set in self.vertices.iter() {
             for vertex in vertex_set {
-                let dim = vertex.borrow().dimension();
+                if vertex.borrow().is_fixed() {
+                    continue;
+                }
+                let dim: usize = vertex.borrow().dimension();
                 let delta_vertex = delta.rows(idx, dim).clone_owned();
                 vertex.borrow_mut().plus(&delta_vertex);
 
@@ -152,295 +180,152 @@ impl Graph {
         0.01
     }
 
-    pub fn calculate_residual(&self) -> na::DVector<f64> {
-        let residual_len = self.edges.iter().fold(0usize, |acc, (_, x)| {
-            acc + x.borrow().dimension()
-        });
-
-        let mut res = na::DVector::<f64>::zeros(residual_len);
-
+    pub fn prepare_hessian_index(&self) {
         let mut idx = 0;
-        for (_id, edge) in self.edges.iter() {
-            let edge_len = edge.borrow().dimension();
-            res.rows_mut(idx, edge_len).copy_from(
-                &edge.borrow().residual()
-            );
-            idx += edge_len; 
-        }
-
-        res
-    }
-
-    pub fn calculate_jt_residual_aj(&self, vertex0_j: usize) -> na::DVector<f64> {
-        assert!(self.vertices[0].len() > vertex0_j);
-        let vertex0_j = self.vertices[0][vertex0_j].clone();
-        let mut res = na::DVector::<f64>::zeros(
-            vertex0_j.borrow().dimension() 
-        );
-
-        for edge in vertex0_j.borrow().edges().iter() {
-            if let Some(edge) = self.edge(*edge) {
-                let tmp = edge.borrow().jacobian(0).transpose() * edge.borrow().sigma() * edge.borrow().residual();
-                res += tmp;
+        for vertex_set in self.vertices.iter() {
+            for vertex in vertex_set {
+                *vertex.borrow_mut().hessian_index_mut() = idx;
+                idx += vertex.borrow().dimension();
             }
         }
-
-        res
     }
 
-    pub fn calculate_jt_residual_bi(&self, vertex1_i: usize) -> na::DVector<f64> {
-        assert!(self.vertices[1].len() > vertex1_i);
-        let vertex1_i = self.vertices[1][vertex1_i].clone();
-        let mut res = na::DVector::<f64>::zeros(
-            vertex1_i.borrow().dimension() 
-        );
-
-        for edge in vertex1_i.borrow().edges().iter() {
-            if let Some(edge) = self.edge(*edge) {
-                res += edge.borrow().jacobian(1).transpose() * edge.borrow().sigma() * edge.borrow().residual();
-            }
+    pub fn calculate_residual(&self) -> f64 {
+        let mut chi2 = 0.0;
+        for edge in self.edges.values() {
+            let residual = edge.borrow().residual();
+            chi2 += (residual.transpose() * edge.borrow().sigma() * residual)[(0, 0)];
         }
 
-        res
+        chi2
     }
 
     pub fn calculate_jt_residual(&self) -> na::DVector<f64> {
-        let jt_residual_a_len = self.vertices[0].iter().fold(0usize, |acc, x| {
-            acc + x.borrow().dimension()
-        });
-        let jt_residual_b_len = self.vertices[1].iter().fold(0usize, |acc, x| {
-            acc + x.borrow().dimension()
-        });
+        let mut jt_residual = na::DVector::<f64>::zeros(self.params_dim());
+        for edge in self.edges.values() {
+            for (idx_v, v) in edge.borrow().vertices().iter().enumerate() {
+                if v.borrow().is_fixed() {
+                    continue;
+                }
 
-        let mut jt_residual = na::DVector::<f64>::zeros(jt_residual_a_len + jt_residual_b_len);
-        
-        let mut idx = 0;
-        for (vertex0_j, vertex) in self.vertices[0].iter().enumerate() {
-            let dim = vertex.borrow().dimension();
-            println!("vertex0_j: {}", vertex0_j);
-            
-            jt_residual.rows_mut(idx, dim).copy_from(
-                &self.calculate_jt_residual_aj(vertex0_j)
-            );
-            idx += dim;
+                let idx_hessian = v.borrow().hessian_index();
+                let dim = v.borrow().dimension();
+                let jacobian = edge.borrow().jacobian(idx_v);
+                let residual = edge.borrow().residual();
+                let mut temp = jt_residual.rows(idx_hessian, dim).clone_owned();
+                temp -= &(jacobian.transpose() * edge.borrow().sigma() * residual);
+                jt_residual.rows_mut(idx_hessian, dim).copy_from(&temp);
+            }
         }
-
-        for (vertex1_i, vertex) in self.vertices[1].iter().enumerate() {
-            let dim = vertex.borrow().dimension();
-            
-            jt_residual.rows_mut(idx, dim).copy_from(
-                &self.calculate_jt_residual_bi(vertex1_i)
-            );
-            idx += dim;
-        }
-      
 
         jt_residual
     }
 
-    #[inline]
-    fn calculate_u(&self, vertex0_j: usize) -> na::DMatrix<f64> {
-        assert!(self.vertices[0].len() > vertex0_j);
-        let vertex0_j = self.vertices[0][vertex0_j].clone();
-        let mut res = na::DMatrix::<f64>::zeros(
-            vertex0_j.borrow().dimension(),
-            vertex0_j.borrow().dimension(),
-        );
-
-        for edge in vertex0_j.borrow().edges().iter() {
-            if let Some(edge) = self.edge(*edge) {
-                res += edge.borrow().jacobian(0).transpose() * edge.borrow().sigma() * edge.borrow().jacobian(0);
-            }
-        }
-
-        res
-    }
-
-    #[inline]
-    fn calculate_v_inv(&self, vertex1_i: usize) -> Option<na::DMatrix<f64>> {
-        assert!(self.vertices[1].len() > vertex1_i);
-        let vertex1_i = self.vertices[1][vertex1_i].clone();
-        let mut res = na::DMatrix::<f64>::zeros(
-            vertex1_i.borrow().dimension(),
-            vertex1_i.borrow().dimension(),
-        );
-
-        for edge in vertex1_i.borrow().edges().iter() {
-            if let Some(edge) = self.edge(*edge) {
-                res += edge.borrow().jacobian(1).transpose() * edge.borrow().sigma() * edge.borrow().jacobian(1);
-            }
-        }
-
-        match res.pseudo_inverse(f64::EPSILON) {
-            Ok(v_inv) => Some(v_inv),
-            Err(_) => None,
-        }
-    }
-
-    #[inline]
-    fn calculate_w(&self, vertex0_j: usize, vertex1_i: usize) -> na::DMatrix<f64> {
-        let vertex0_j = self.vertices[0][vertex0_j].clone();
-        let vertex1_i = self.vertices[1][vertex1_i].clone();
-        let nrows = vertex0_j.borrow().dimension();
-        let ncols = vertex1_i.borrow().dimension();
-        let mut w = na::DMatrix::<f64>::zeros(nrows, ncols);
-        for edge in vertex0_j.borrow().edges().iter() {
-            if let Some(edge) = self.edge(*edge) {
-                if !Rc::ptr_eq(&edge.borrow().vertex(1), &vertex1_i) {
+    pub fn make_normal_equation(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let mut a = na::DMatrix::<f64>::zeros(self.params_dim(), self.params_dim());
+        let mut b = na::DVector::<f64>::zeros(self.params_dim());
+        for edge in self.edges.values() {
+            let v_size = edge.borrow().vertices().len();
+            for idx_v_i in 0..v_size {
+                let v_i = edge.borrow().vertex(idx_v_i);
+                if v_i.borrow().is_fixed() {
                     continue;
                 }
+                let idx_hessian_i = v_i.borrow().hessian_index();
+                let dim_i = v_i.borrow().dimension();
+                for idx_v_j in idx_v_i..v_size {
+                    let v_j = edge.borrow().vertex(idx_v_j);
+                    if v_j.borrow().is_fixed() {
+                        continue;
+                    }
+                    let idx_hessian_j = v_j.borrow().hessian_index();
+                    let dim_j = v_j.borrow().dimension();
+                    let mut hessian = a.view((idx_hessian_i, idx_hessian_j), (dim_i, dim_j)).clone_owned();
+                    let temp = edge.borrow().jacobian(idx_v_i).transpose() * edge.borrow().sigma() * edge.borrow().jacobian(idx_v_j);
+                    hessian += &temp;
+                    a.view_mut((idx_hessian_i, idx_hessian_j), (dim_i, dim_j)).copy_from(&hessian);
 
-                w += edge.borrow().jacobian(0).transpose() * edge.borrow().sigma() * edge.borrow().jacobian(1);
+                    if idx_v_i != idx_v_j {
+                        let mut hessian = a.view((idx_hessian_j, idx_hessian_i), (dim_j, dim_i)).clone_owned();
+                        let temp = edge.borrow().jacobian(idx_v_i).transpose() * edge.borrow().sigma() * edge.borrow().jacobian(idx_v_j);
+                        hessian += &temp.transpose();
+                        a.view_mut((idx_hessian_j, idx_hessian_i), (dim_j, dim_i)).copy_from(&hessian);
+                    }
+                }
+
+                let mut temp = b.rows(idx_hessian_i, dim_i).clone_owned();
+                temp -= &(edge.borrow().jacobian(idx_v_i).transpose() * edge.borrow().sigma() * edge.borrow().residual());
+                b.rows_mut(idx_hessian_i, dim_i).copy_from(&temp);
             }
         }
 
-        w
+        self.hessian = a + &(na::DMatrix::<f64>::identity(self.params_dim(), self.params_dim()) * self.lm_params.tau);
+        self.b = b;
+
+        Ok(())
     }
 
-    #[inline]
-    fn calculate_y(&self, vertex0_j: usize, vertex1_i: usize) -> Option<na::DMatrix<f64>> {
-        Some(self.calculate_w(vertex0_j, vertex1_i) * self.calculate_v_inv(vertex1_i)?)
-    }
+    fn calculate_v_inv(&self) -> Option<na::DMatrix<f64>> {
+        assert!(self.vertices.len() > 1);
+        let mut dim_point = 0;
+        for vertex in self.vertices[1].iter() {
+            if vertex.borrow().is_fixed() {
+                continue;
+            }
+            let dim = vertex.borrow().dimension();
+            dim_point += dim;
+        }
+        let mut hmm_inv = na::DMatrix::<f64>::zeros(dim_point, dim_point);
+        for vertex in self.vertices[1].iter() {
+            if vertex.borrow().is_fixed() {
+                continue;
+            }
+            let idx_hessian = vertex.borrow().hessian_index();
+            let dim = vertex.borrow().dimension();
+            let v_inv = self.hessian.view((idx_hessian, idx_hessian), (dim, dim))
+                .try_inverse()?;
+            let idx_v_inv = idx_hessian + dim_point - self.hessian.nrows();
+            hmm_inv.view_mut((idx_v_inv, idx_v_inv), (dim, dim)).copy_from(&v_inv);
+        }
 
-    fn calculate_s(&self) -> Option<na::DMatrix<f64>> {
-        let dim = self.vertices[0].iter().fold(0usize, |acc, x| {
-            acc + x.borrow().dimension()
-        });
+        Some(hmm_inv)
+    } 
 
-        let mut s = na::DMatrix::<f64>::zeros(
-            dim,
-            dim
-        );
-        
-        // Divide blocks for parallelization.
-        let s_blocks = (0..self.vertices[0].len())
-            .flat_map(|j| (0..self.vertices[0].len()).map(|k| (j, k)).collect::<Vec<_>>())
-            .collect::<Vec<_>>();
-
-        let s_blocks = s_blocks
-            .into_iter()
-            .map(|(view_j, view_k)| {
-                let mut s_jk = na::DMatrix::<f64>::zeros(
-                    self.vertices[0][view_j].borrow().dimension(),
-                    self.vertices[0][view_k].borrow().dimension(),
-                );
-                if view_j == view_k {
-                    let u = self.calculate_u(view_j);
-                    s_jk += u;
-                }
-                for (vertex1_i, vertex ) in self.vertices[1].iter().enumerate() {
-                    let y_ij = self.calculate_y(view_j, vertex1_i)?;
-                    let w_ik = self.calculate_w(view_k, vertex1_i);
-                    let y_ij_w = y_ij * w_ik.transpose();
-                    s_jk -= y_ij_w;
-                }
-                Some((view_j, view_k, s_jk))
-            })
-            .collect::<Vec<_>>();
-
-        s_blocks.iter().for_each(|block| {
-            let (j, k, s_jk) = if let Some((j, k, s_jk)) = block {
-                (j, k, s_jk)
-            } else {
-                return;
-            };
-            s.view_mut(
-                (j * self.vertices[0][0].borrow().dimension(), k * self.vertices[0][0].borrow().dimension()),
-                (self.vertices[0][0].borrow().dimension(), self.vertices[0][0].borrow().dimension()),
-            )
-            .copy_from(s_jk);
-        });
-
-        Some(s)
-    }
-
-    fn calculate_e(&self) -> Option<na::DVector<f64>> {
-        let dim = self.vertices[0].iter().fold(0usize, |acc, x| {
-            acc + x.borrow().dimension()
-        });
-        let mut e = na::DVector::zeros(dim);
-
-        let e_blocks = self.vertices[0].iter().enumerate()
-            .map(|(vertex0_j, vertex0)| {
-                let dim0 = vertex0.borrow().dimension();
-                let mut e_j = self.calculate_jt_residual_aj(vertex0_j);
-                for (vertex1_i, vertex1) in self.vertices[1].iter().enumerate() {
-                    e_j -= self.calculate_y(vertex0_j, vertex1_i)? * self.calculate_jt_residual_bi(vertex1_i);
-                }
-                Some((vertex0_j, e_j))
-            })
-            .collect::<Vec<_>>();
-
+    fn calculate_delta_point(&self, v_inv: &na::DMatrix<f64>, rhs: &na::DVector<f64>) -> Option<na::DVector<f64>> {
+        assert!(self.vertices.len() > 1);
+        let mut delta_point = na::DVector::<f64>::zeros(v_inv.nrows());
         let mut idx = 0;
-        e_blocks.iter().for_each(|block| {
-            let (j, e_j) = if let Some((j, e_j)) = block {
-                (j, e_j)
-            } else {
-                return;
-            };
-            let dim = self.vertices[0][*j].borrow().dimension();
-            e.rows_mut(idx, dim)
-                .copy_from(e_j);
+        for vertex in self.vertices[1].iter() {
+            if vertex.borrow().is_fixed() {
+                continue;
+            }
+            let dim = vertex.borrow().dimension();
+            delta_point.rows_mut(idx, dim).copy_from(
+                &(v_inv.view((idx, idx), (dim, dim)) * rhs.rows(idx, dim))
+            );
             idx += dim;
-        });
+        }
 
-        Some(e)
+        Some(delta_point)
     }
 
-    fn calculate_delta_b(&self, delta_a: &na::DVector<f64>) -> Option<na::DVector<f64>> {
-        let dim = self.vertices[1].iter().fold(0usize, |acc, x| {
-            acc + x.borrow().dimension()
-        });
-        let mut b = na::DVector::zeros(dim);
+    pub fn calculate_delta_step(&mut self) -> Option<na::DVector<f64>> {
+        self.make_normal_equation().ok()?;
+        let v_inv = self.calculate_v_inv()?;
+        let dim_point = v_inv.nrows();
+        let dim_pose = self.hessian.nrows() - dim_point;
+        let hpp = self.hessian.view((0, 0), (dim_pose, dim_pose));
+        let hpm = self.hessian.view((0, dim_pose), (dim_pose, dim_point));
+        let hmp = self.hessian.view((dim_pose, 0), (dim_point, dim_pose));
+        let bp = self.b.rows(0, dim_pose);
+        let bm = self.b.rows(dim_pose, dim_point);
 
-        let e_blocks = self.vertices[1].iter().enumerate()
-            .map(|(vertex1_i, _vertex1)| {
-                let mut idx = 0; 
-                let mut e_i = self.calculate_jt_residual_bi(vertex1_i);
-                for (vertex0_j, vertex0) in self.vertices[0].iter().enumerate() {
-                    let dim0 = vertex0.borrow().dimension();
-                    let delta_aj = delta_a.rows(idx, dim0).clone_owned();
-                    e_i -= self.calculate_w(vertex0_j, vertex1_i).transpose() * delta_aj;
-                    idx += dim0;
-                }
-                
-                Some((vertex1_i, self.calculate_v_inv(vertex1_i)? * e_i))
-            })
-            .collect::<Vec<_>>();
+        let delta_pose = (hpp - hpm * &v_inv * hmp).lu().solve(&(bp - hpm * &v_inv * bm))?;
+        let delta_point = self.calculate_delta_point(&v_inv, &(bm - hmp * &delta_pose))?;
 
-        let mut idx = 0;
-        e_blocks.iter().for_each(|block| {
-            let (i, e_i) = if let Some((i, e_i)) = block {
-                (i, e_i)
-            } else {
-                return;
-            };
-            let dim = self.vertices[1][*i].borrow().dimension();
-            b.rows_mut(idx, dim)
-                .copy_from(e_i);
-            idx += dim;
-        });
-
-        Some(b)
-
-    }
-
-    pub fn calculate_delta_step(&self) -> Option<na::DVector<f64>> {
-        println!("1");
-        let s = self.calculate_s()?;
-        println!("2");
-        let e = self.calculate_e();
-        println!("3");
-        let delta_a = s.lu().solve(&e?).unwrap();
-        println!("4");
-        let delta_b = self.calculate_delta_b(&delta_a)?;
-        println!("5");
-
-        let mut delta = na::DVector::<f64>::zeros(delta_a.len() + delta_b.len());
-        delta.rows_mut(0, delta_a.len()).copy_from(&delta_a);
-        delta
-            .rows_mut(delta_a.len(), delta_b.len())
-            .copy_from(&delta_b);
+        let mut delta = na::DVector::<f64>::zeros(self.hessian.nrows());
+        delta.rows_mut(0, dim_pose).copy_from(&delta_pose);
+        delta.rows_mut(dim_pose, dim_point).copy_from(&delta_point);
 
         Some(delta)
     }
@@ -451,6 +336,7 @@ impl Graph {
         let mut jt_residual = self.calculate_jt_residual();
         let mut stop = jt_residual.abs().max() < self.lm_params.eps1;
         let mut k = 0;
+        self.prepare_hessian_index();
 
         while k < self.lm_params.max_iter && !stop {
             println!("k: {}", k);
@@ -466,11 +352,11 @@ impl Graph {
                 } else {
                     self.update_params(&delta);
                     let e1 = self.calculate_residual();
-                    rho = (e.norm().powi(2) - e1.norm().powi(2)) / (delta.transpose() * (self.lm_params.u * delta - &jt_residual))[0];
+                    rho = (e - e1) / (delta.transpose() * (self.lm_params.u * delta - &jt_residual))[0];
                     if rho > 0.0 {
                         e = e1;
                         jt_residual = self.calculate_jt_residual();
-                        stop = jt_residual.abs().max() < self.lm_params.eps1 || e.norm() < self.lm_params.eps3;
+                        stop = jt_residual.abs().max() < self.lm_params.eps1 || e < self.lm_params.eps3;
                         self.lm_params.u *= f64::max(1.0 / 3.0, 1.0 - (2.0 * rho - 1.0).powi(3));
                         v = 2.0;
                     } else {
@@ -479,6 +365,7 @@ impl Graph {
                     }   
                 }
             }
+            println!("e: {}", e);
         }
 
         Some(())
@@ -612,6 +499,8 @@ pub struct CameraVertex {
     pub id: usize,
     pub params: na::DVector<f64>,
     pub edges: Vec<usize>,
+    pub fixed: bool,
+    pub hessian_index: usize,
 }
 
 impl Id for CameraVertex {
@@ -641,6 +530,14 @@ impl Vertex for CameraVertex {
         self.params += delta;
     }
 
+    fn hessian_index(&self) -> usize{
+        self.hessian_index
+    }
+
+    fn hessian_index_mut(&mut self) -> &mut usize {
+        &mut self.hessian_index
+    }
+
     fn dimension(&self) -> usize {
         self.params().len()
     }
@@ -654,6 +551,8 @@ pub struct PointVertex {
     pub id: usize,
     pub params: na::DVector<f64>,
     pub edges: Vec<usize>,
+    pub fixed: bool,
+    pub hessian_index: usize,
 }
 
 impl Id for PointVertex {
@@ -681,6 +580,14 @@ impl Vertex for PointVertex {
 
     fn plus(&mut self, delta: &na::DVector<f64>) {
         self.params += delta;
+    }
+
+    fn hessian_index(&self) -> usize {
+        self.hessian_index
+    }
+    
+    fn hessian_index_mut(&mut self) -> &mut usize {
+        &mut self.hessian_index
     }
 }
 
@@ -797,6 +704,8 @@ mod tests{
                 id: x,
                 params: na::DVector::<f64>::zeros(9),
                 edges: Vec::new(),
+                fixed: false,
+                hessian_index: 0,
             })) as super::VertexBase
         }).collect::<Vec<super::VertexBase>>();
 
@@ -805,6 +714,8 @@ mod tests{
                 id: x + 3,
                 params: na::DVector::<f64>::zeros(3),
                 edges: Vec::new(),
+                fixed: false,
+                hessian_index: 0,
             })) 
             as super::VertexBase
         }).collect::<Vec<_>>();
