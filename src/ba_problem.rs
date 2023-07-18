@@ -1,28 +1,23 @@
-use std::cell::RefCell;
 use std::fs::File;
-use std::io::{self, prelude::*, BufReader};
-use std::rc::Rc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::io::{prelude::*, BufReader};
 
 use nalgebra as na;
-use rand::Rng;
 
-#[derive(Debug)]
 pub struct Observation {
-    point_idx: usize,
-    camera_idx: usize,
-    x: f64,
-    y: f64,
-    x_std: f64,
-    y_std: f64,
+    pub point_idx: usize,
+    pub camera_idx: usize,
+    pub x: f64,
+    pub y: f64,
+    pub x_std: f64,
+    pub y_std: f64,
 }
 
 pub struct BaProblem {
-    num_cameras: usize,
-    observations: Vec<Observation>,
-    parameters: na::DVector<f64>,
-    cameras: Vec<na::DVector<f64>>,
-    points: Vec<na::DVector<f64>>,
+    pub num_cameras: usize,
+    pub observations: Vec<Observation>,
+    pub parameters: na::DVector<f64>,
+    pub cameras: Vec<na::DVector<f64>>,
+    pub points: Vec<na::DVector<f64>>,
 }
 
 impl BaProblem {
@@ -121,20 +116,19 @@ impl BaProblem {
         }
     }
 
-    fn get_camera_index(&self, camera_idx: usize) -> usize {
+    pub fn get_camera_index(&self, camera_idx: usize) -> usize {
         9 * camera_idx
     }
 
-    fn get_point_index(&self, point_idx: usize) -> usize {
+    pub fn get_point_index(&self, point_idx: usize) -> usize {
         9 * self.num_cameras + 3 * point_idx
     }
 }
 
 use std::fs::OpenOptions;
-use std::io::prelude::*;
 use ply_rs::ply::{ Ply, DefaultElement, Encoding, ElementDef, PropertyDef, PropertyType, ScalarType, Property, Addable };
-use ply_rs::writer::{ Writer };
-fn savePly(filename: &str, vertices: &[f64]) {
+use ply_rs::writer::Writer;
+pub fn save_ply(filename: &str, vertices: &[f64]) {
     // crete a ply objet
     let mut ply = {
         let mut ply = Ply::<DefaultElement>::new();
@@ -143,7 +137,7 @@ fn savePly(filename: &str, vertices: &[f64]) {
 
         // Define the elements we want to write. In our case we write a 2D Point.
         // When writing, the `count` will be set automatically to the correct value by calling `make_consistent`
-        let mut point_element = ElementDef::new("point".to_string());
+        let mut point_element = ElementDef::new("vertex".to_string());
         let p = PropertyDef::new("x".to_string(), PropertyType::Scalar(ScalarType::Float));
         point_element.properties.add(p);
         let p = PropertyDef::new("y".to_string(), PropertyType::Scalar(ScalarType::Float));
@@ -164,7 +158,7 @@ fn savePly(filename: &str, vertices: &[f64]) {
             points.push(point);
         }
 
-        ply.payload.insert("point".to_string(), points);
+        ply.payload.insert("vertex".to_string(), points);
 
         // only `write_ply` calls this by itself, for all other methods the client is
         // responsible to make the data structure consistent.
@@ -181,12 +175,15 @@ fn savePly(filename: &str, vertices: &[f64]) {
 
     // set up a writer
     let w = Writer::new();
-    let written = w.write_ply(&mut file_result, &mut ply).unwrap();
+    let _written = w.write_ply(&mut file_result, &mut ply).unwrap();
 }    
 
+#[cfg(test)]
 #[test]
 fn test_ba_problem() {
     use crate::graph::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     let num_camera = 10;
     let num_point = 100;
@@ -195,7 +192,7 @@ fn test_ba_problem() {
     println!("num_observations: {}", problem.observations.len());
     println!("num_camera: {}", problem.cameras.len());
     println!("params: {}", problem.parameters.len());
-    savePly("output.ply", &problem.parameters.as_slice()[9 * num_camera ..]);
+    save_ply("output.ply", &problem.parameters.as_slice()[9 * num_camera ..]);
 
     let mut graph = crate::graph::Graph::default();
     let mut id = 0;
@@ -239,5 +236,5 @@ fn test_ba_problem() {
     println!("params: {}", graph.vertex2param().norm()); 
     graph.optimize();
     println!("params: {}", graph.vertex2param().norm()); 
-    savePly("output_optimized.ply", &graph.vertex2param().as_slice()[9 * num_camera ..]);
+    save_ply("output_optimized.ply", &graph.vertex2param().as_slice()[9 * num_camera ..]);
 }

@@ -63,7 +63,10 @@ impl LmParams {
     pub fn new(tau: f64, eps1: f64, eps2: f64, eps3: f64, v: f64, max_iter: usize) -> Self {
         Self { tau, eps1, eps2, eps3, v, max_iter, u: 0.0 }
     }
-    pub fn default() -> Self {
+}
+
+impl Default for LmParams {
+    fn default() -> Self {
         Self::new(1e-3, 1e-15, 1e-6, 1e-15, 2.0, 100)
     }
 }
@@ -76,8 +79,14 @@ pub struct Graph {
     b: na::DVector<f64>,
 }
 
+impl Default for Graph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Graph {
-    pub fn default() -> Self {
+    pub fn new() -> Self {
         Self {
             vertices: Vec::new(),
             edges: HashMap::<usize, EdgeBase>::new(),
@@ -422,35 +431,6 @@ fn skew_sym(v: na::Vector3<f64>) -> na::Matrix3<f64> {
     ss
 }
 
-/// Converts an NAlgebra Isometry to a 6-Vector Lie Algebra representation
-/// of a rigid body transform.
-///
-/// This is largely taken from this paper:
-/// https://ingmec.ual.es/~jlblanco/papers/jlblanco2010geometry3D_techrep.pdf
-fn log_map(input: &na::Isometry3<f64>) -> na::Vector6<f64> {
-    let t: na::Vector3<f64> = input.translation.vector;
-
-    let quat = input.rotation;
-    let theta: f64 = 2.0 * (quat.scalar()).acos();
-    let half_theta = 0.5 * theta;
-    let mut omega = na::Vector3::<f64>::zeros();
-
-    let mut v_inv = na::Matrix3::<f64>::identity();
-    if theta > 1e-6 {
-        omega = quat.vector() * theta / (half_theta.sin());
-        let ssym_omega = skew_sym(omega);
-        v_inv -= ssym_omega * 0.5;
-        v_inv += ssym_omega * ssym_omega * (1.0 - half_theta * half_theta.cos() / half_theta.sin())
-            / (theta * theta);
-    }
-
-    let mut ret = na::Vector6::<f64>::zeros();
-    ret.fixed_view_mut::<3, 1>(0, 0).copy_from(&(v_inv * t));
-    ret.fixed_view_mut::<3, 1>(3, 0).copy_from(&omega);
-
-    ret
-}
-
 fn jacobian_ps_wrt_pose(
     ps: &na::Vector3<f64>,
 ) -> na::Matrix3x6<f64>
@@ -466,11 +446,11 @@ fn jacobian_ps_wrt_pose(
 }
 
 fn jacobian_ps_wrt_pw(
-    Rsw: &na::Rotation3<f64>,
+    r_sw: &na::Rotation3<f64>,
 ) -> na::Matrix3<f64>
 {
     let mut jac = na::Matrix3::<f64>::zeros();
-    jac.copy_from(Rsw.matrix());
+    jac.copy_from(r_sw.matrix());
     jac
 }
 
@@ -689,12 +669,12 @@ impl Edge for Point3dProjectEdge {
 }
 
 
+#[cfg(test)]
 mod tests{
     use std::{rc::Rc, cell::RefCell};
 
     use nalgebra as na;
 
-    use super::{Edge, Vertex};
 
     #[test]
     fn test_graph() {
