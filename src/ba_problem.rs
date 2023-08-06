@@ -182,6 +182,7 @@ pub fn save_ply(filename: &str, vertices: &[f64]) {
 #[test]
 fn test_ba_problem() {
     use crate::graph::*;
+    use crate::point3d_project_edge::*;
     use std::cell::RefCell;
     use std::rc::Rc;
 
