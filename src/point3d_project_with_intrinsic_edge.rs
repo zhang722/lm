@@ -169,7 +169,6 @@ impl Edge for Point3dProjectWithIntrinsicEdge {
         let pn = ps2pdn(&intrinsics, &ps);
         let pp = pdn2pp(&intrinsics, &pn);
         let mut res = na::DVector::zeros(pp.len());
-        println!("pp: {}, mes: {} {}", pp, self.measurement[0], self.measurement[1]);
         res.fixed_view_mut::<2, 1>(0, 0).copy_from(
             &(pp - na::Vector2::new(self.measurement[0], self.measurement[1]))
         );
