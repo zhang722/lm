@@ -111,7 +111,6 @@ impl Graph {
             print!("id: {}, ", edge.borrow().id());
             print!("vertices: {:?}", edge.borrow().vertices().iter().map(|x| { x.borrow().id() }).collect::<Vec<_>>());
             println!("residual: {}", edge.borrow().residual().transpose());
-            // println!("jacobian: {}", edge.borrow().jacobian(0));
         }
     }
 
@@ -204,14 +203,17 @@ impl Graph {
         self.vertex2param().norm() 
     }
 
-    fn init_u(&self) -> f64 {
-        0.01
+    fn init_u(&mut self) {
+        self.lm_params.u = 0.01;
     }
 
     pub fn prepare_hessian_index(&self) {
         let mut idx = 0;
         for vertex_set in self.vertices.iter() {
             for vertex in vertex_set {
+                if vertex.borrow().is_fixed() {
+                    continue;
+                }
                 *vertex.borrow_mut().hessian_index_mut() = idx;
                 idx += vertex.borrow().dimension();
             }
@@ -339,9 +341,14 @@ impl Graph {
 
     pub fn calculate_delta_step(&mut self) -> Option<na::DVector<f64>> {
         self.make_normal_equation().ok()?;
+        let mut delta = na::DVector::<f64>::zeros(self.hessian.nrows());
         let v_inv = self.calculate_v_inv()?;
         let dim_point = v_inv.nrows();
         let dim_pose = self.hessian.nrows() - dim_point;
+
+        if dim_pose == 0 {
+            return self.calculate_delta_point(&v_inv, &self.b);
+        }
         let hpp = self.hessian.view((0, 0), (dim_pose, dim_pose));
         let hpm = self.hessian.view((0, dim_pose), (dim_pose, dim_point));
         let hmp = self.hessian.view((dim_pose, 0), (dim_point, dim_pose));
@@ -351,7 +358,6 @@ impl Graph {
         let delta_pose = (hpp - hpm * &v_inv * hmp).lu().solve(&(bp - hpm * &v_inv * bm))?;
         let delta_point = self.calculate_delta_point(&v_inv, &(bm - hmp * &delta_pose))?;
 
-        let mut delta = na::DVector::<f64>::zeros(self.hessian.nrows());
         delta.rows_mut(0, dim_pose).copy_from(&delta_pose);
         delta.rows_mut(dim_pose, dim_point).copy_from(&delta_point);
 
@@ -380,11 +386,13 @@ impl Graph {
                 } else {
                     self.update_params(&delta);
                     let e1 = self.calculate_residual();
-                    rho = (e - e1) / ((delta.transpose() * (self.lm_params.u * delta + &jt_residual))[0] + 1e-3);
-                    if rho > 0.0 {
+                    let temp = (delta.transpose() * (self.lm_params.u * &delta + &jt_residual))[0] + 1e-3;
+                    rho = (e - e1) / temp;
+                    if rho > 0.0 && !rho.is_nan() {
+                        let slow = (e - e1) / e;
                         e = e1;
                         jt_residual = self.calculate_jt_residual();
-                        stop = jt_residual.abs().max() < self.lm_params.eps1 || e < self.lm_params.eps3;
+                        stop = jt_residual.abs().max() < self.lm_params.eps1 || e < self.lm_params.eps3 || slow < 1e-3;
                         self.lm_params.u *= f64::max(1.0 / 3.0, 1.0 - (2.0 * rho - 1.0).powi(3));
                         v = 2.0;
                     } else {

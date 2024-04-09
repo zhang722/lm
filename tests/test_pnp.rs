@@ -62,12 +62,6 @@ pub fn load(path: &str) -> Result<Graph, Box<dyn Error>>  {
     for p in v["points"].as_array().unwrap() {
         points3d.push(na::DVector::<f64>::from_vec(vec![p[0].as_f64().unwrap(), p[1].as_f64().unwrap(), p[2].as_f64().unwrap()]));
     }
-    let intrinsics = CameraInstrinsics::from_vec(vec![458.654, 457.296, 367.215, 248.375, -0.28340811, 0.07395907, 0.00019359, 1.76187114e-05]);
-    for p in points3d.iter().take(3) {
-        let pdn = ps2pdn(&intrinsics, &na::Vector3::new(p[0], p[1], p[2]));
-        let pp = pdn2pp(&intrinsics, &pdn);
-        println!("{}", pp);
-    }
 
     let mut graph = Graph::default();
     let mut id = 0;
@@ -83,15 +77,15 @@ pub fn load(path: &str) -> Result<Graph, Box<dyn Error>>  {
         ret
     }).collect::<Vec<_>>();
 
-    for f in v["keyframes"].as_array().unwrap() {
+    for f in v["keyframes"].as_array().unwrap().iter() {
         let mut pt2d = Vec::new();
-        let mut camera_model = Vec::new();
+        // let mut camera_model = Vec::new();
         for p in f["points"].as_array().unwrap() {
             pt2d.push(na::Point2::new(p[0].as_f64().unwrap(), p[1].as_f64().unwrap()));
         }
-        for param in f["camera_model"].as_array().unwrap() {
-            camera_model.push(param.as_f64().unwrap());
-        }
+        // for param in f["camera_model"].as_array().unwrap() {
+        //     camera_model.push(param.as_f64().unwrap());
+        // }
         poses.push(log_map(&na::Isometry3::from_parts(
             na::Translation3::new(
                 f["pose"]["x"].as_f64().unwrap(),
@@ -107,12 +101,12 @@ pub fn load(path: &str) -> Result<Graph, Box<dyn Error>>  {
         ))); 
     }
 
-    let camera_vertices = poses.iter().map(|x| {
+    let camera_vertices = poses.iter().enumerate().map(|(idx, x)| {
         let ret = Rc::new(RefCell::new(CameraVertex {
             id,
             params: x.clone(),
             edges: Vec::new(),
-            fixed: false,
+            fixed: idx == 0,
             hessian_index: 0,
         })) as VertexBase;
         id += 1;
@@ -137,6 +131,9 @@ pub fn load(path: &str) -> Result<Graph, Box<dyn Error>>  {
         }
 
     }
+    for vertex in camera_vertices.iter() {
+        println!("is fixed: {}", vertex.borrow().is_fixed());
+    }
     graph.add_vertex_set(camera_vertices);
     graph.add_vertex_set(point_vertices);
 
@@ -147,7 +144,14 @@ pub fn load(path: &str) -> Result<Graph, Box<dyn Error>>  {
 #[cfg(test)]
 #[test]
 fn test_position() {
-    let mut graph: Graph = load("scene.json").unwrap();
-    // graph.optimize();
-    // graph.print();
+    let mut graph = load("scene.json").unwrap();
+    let param = graph.vertex2param();
+    save_ply("output.ply", &param.as_slice()[2 * 6 ..]);
+    graph.optimize();
+    let param_opt = graph.vertex2param();
+
+    for (i, p) in param.iter().enumerate() {
+        println!("{}: {}, {}", i, p, param_opt[i]);
+    }
+    save_ply("output_optimized.ply", &param_opt.as_slice()[2 * 6 ..]);
 }

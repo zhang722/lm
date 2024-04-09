@@ -145,6 +145,10 @@ impl Vertex for CameraVertex {
     fn add_edge(&mut self, id: usize) {
         self.edges_mut().push(id);
     }
+
+    fn is_fixed(&self) -> bool {
+        self.fixed
+    }
 }
 
 pub struct PointVertex {
@@ -188,6 +192,10 @@ impl Vertex for PointVertex {
     
     fn hessian_index_mut(&mut self) -> &mut usize {
         &mut self.hessian_index
+    }
+
+    fn is_fixed(&self) -> bool {
+        self.fixed
     }
 }
 
