@@ -147,7 +147,7 @@ pub fn load(path: &str) -> Result<Graph, Box<dyn Error>>  {
 #[cfg(test)]
 #[test]
 fn test_position() {
-    let mut graph = load("scene.json").unwrap();
+    let mut graph: Graph = load("scene.json").unwrap();
     // graph.optimize();
     // graph.print();
 }
